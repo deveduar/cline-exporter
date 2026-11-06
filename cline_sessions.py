@@ -18,6 +18,14 @@ _TS_RE = re.compile(r"^(\d{10,})")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
+_USAGE_FIELDS = (
+    ("inputTokens", "input_tokens"),
+    ("outputTokens", "output_tokens"),
+    ("cacheReadTokens", "cache_read_tokens"),
+    ("cacheWriteTokens", "cache_write_tokens"),
+)
+_TOKEN_KEYS = tuple(snake for _, snake in _USAGE_FIELDS)
+
 
 def derive_title(text, max_len=80):
     """Build a short human-readable title from the first user message."""
@@ -66,6 +74,58 @@ def _load_json(path):
         return None
 
 
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_usage(raw):
+    """Normalize a Cline usage block, keeping unknown values as None."""
+    if not isinstance(raw, dict):
+        return None
+    usage = {key: None for key in _TOKEN_KEYS}
+    usage["total_cost"] = None
+    found = False
+    for raw_key, key in _USAGE_FIELDS:
+        value = _as_int(raw.get(raw_key))
+        if value is not None:
+            usage[key] = value
+            found = True
+    cost = _as_float(raw.get("totalCost"))
+    if cost is not None:
+        usage["total_cost"] = cost
+        found = True
+    return usage if found else None
+
+
+def _sum_message_metrics(messages):
+    """Sum per-message assistant metrics as a fallback for missing usage."""
+    usage = {key: 0 for key in _TOKEN_KEYS}
+    usage["total_cost"] = None
+    found = False
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        metrics = msg.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        for raw_key, key in _USAGE_FIELDS:
+            value = _as_int(metrics.get(raw_key))
+            if value is not None:
+                usage[key] += value
+                found = True
+    return usage if found else None
+
+
 class Session:
     def __init__(self, folder):
         self.folder = Path(folder)
@@ -76,6 +136,13 @@ class Session:
         self._messages = None
         self._name = None
         self._created = None
+        self._usage = None
+        self._usage_loaded = False
+        self._aggregate_usage = None
+        self._aggregate_usage_loaded = False
+        self._models = None
+        self._models_loaded = False
+        self._extra = None
 
     @property
     def meta(self):
@@ -170,6 +237,143 @@ class Session:
     @property
     def cwd(self):
         return self.meta.get("cwd") or ""
+
+    @property
+    def metadata(self):
+        data = self.meta.get("metadata")
+        return data if isinstance(data, dict) else {}
+
+    @property
+    def usage(self):
+        if not self._usage_loaded:
+            self._usage_loaded = True
+            usage = _normalize_usage(self.metadata.get("usage"))
+            if usage is None:
+                usage = _sum_message_metrics(self.messages)
+                if usage is not None:
+                    cost = _as_float(self.metadata.get("totalCost"))
+                    if cost is not None:
+                        usage["total_cost"] = cost
+            elif usage.get("total_cost") is None:
+                cost = _as_float(self.metadata.get("totalCost"))
+                if cost is not None:
+                    usage["total_cost"] = cost
+            self._usage = usage
+        return self._usage
+
+    @property
+    def aggregate_usage(self):
+        if not self._aggregate_usage_loaded:
+            self._aggregate_usage_loaded = True
+            aggregate = _normalize_usage(self.metadata.get("aggregateUsage"))
+            self._aggregate_usage = aggregate if aggregate != self.usage else None
+        return self._aggregate_usage
+
+    @property
+    def total_cost(self):
+        usage = self.usage
+        if usage and usage.get("total_cost") is not None:
+            return usage["total_cost"]
+        return _as_float(self.metadata.get("totalCost"))
+
+    @property
+    def aggregated_agents_cost(self):
+        return _as_float(self.metadata.get("aggregatedAgentsCost"))
+
+    @property
+    def models(self):
+        if not self._models_loaded:
+            self._models_loaded = True
+            buckets = {}
+            for msg in self.messages:
+                if msg.get("role") != "assistant":
+                    continue
+                info = msg.get("modelInfo")
+                if not isinstance(info, dict):
+                    continue
+                key = (
+                    info.get("id") or "",
+                    info.get("provider") or "",
+                )
+                bucket = buckets.get(key)
+                if bucket is None:
+                    bucket = {
+                        "id": key[0],
+                        "provider": key[1],
+                        "family": info.get("family") or "",
+                        "messages": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "_tokens": False,
+                    }
+                    buckets[key] = bucket
+                elif not bucket["family"] and info.get("family"):
+                    bucket["family"] = info["family"]
+                bucket["messages"] += 1
+                metrics = msg.get("metrics")
+                if isinstance(metrics, dict):
+                    for raw_key, snake in _USAGE_FIELDS:
+                        value = _as_int(metrics.get(raw_key))
+                        if value is not None:
+                            bucket[snake] += value
+                            bucket["_tokens"] = True
+            if not buckets:
+                self._models = None
+            else:
+                models = []
+                for bucket in sorted(
+                    buckets.values(),
+                    key=lambda b: (-b["messages"], b["id"]),
+                ):
+                    if not bucket.pop("_tokens"):
+                        for key in _TOKEN_KEYS:
+                            bucket[key] = None
+                    models.append(bucket)
+                self._models = models
+        return self._models
+
+    @property
+    def extra_meta(self):
+        if self._extra is None:
+            meta = self.meta
+            metadata = self.metadata
+            checkpoint = metadata.get("checkpoint")
+            latest = (
+                checkpoint.get("latest")
+                if isinstance(checkpoint, dict)
+                else None
+            )
+            git = metadata.get("git")
+            origin = metadata.get("sessionHistoryOrigin")
+            self._extra = {
+                "status": meta.get("status"),
+                "ended_at": meta.get("ended_at"),
+                "exit_code": meta.get("exit_code"),
+                "interactive": meta.get("interactive"),
+                "source": meta.get("source"),
+                "workspace_root": meta.get("workspace_root"),
+                "team_name": meta.get("team_name"),
+                "enable_tools": meta.get("enable_tools"),
+                "enable_spawn": meta.get("enable_spawn"),
+                "enable_teams": meta.get("enable_teams"),
+                "parent_session_id": meta.get("parent_session_id"),
+                "parent_agent_id": meta.get("parent_agent_id"),
+                "agent_id": meta.get("agent_id"),
+                "is_subagent": meta.get("is_subagent"),
+                "cline_title": metadata.get("title"),
+                "git_branch": (
+                    git.get("branch") if isinstance(git, dict) else None
+                ),
+                "checkpoint_latest": (
+                    latest if isinstance(latest, dict) else None
+                ),
+                "session_origin": (
+                    origin if isinstance(origin, dict) else None
+                ),
+            }
+        return self._extra
 
 
 def discover_sessions(sessions_root=None, limit=None):

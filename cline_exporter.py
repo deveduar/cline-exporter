@@ -30,6 +30,80 @@ from cline_markdown import MODES, TRUNCATE_FROM, session_to_markdown
 DEFAULT_OUTPUT_DIR = "cline_exports"
 DEFAULT_JSONL = "cline_exports/all_sessions.jsonl"
 
+_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def _session_metadata(session):
+    extra = session.extra_meta
+    return {
+        "id": session.id,
+        "name": session.name,
+        "created": session.created_str(),
+        "message_count": len(session.messages),
+        "provider": session.provider,
+        "model": session.model,
+        "cwd": session.cwd,
+        "status": extra.get("status"),
+        "ended_at": extra.get("ended_at"),
+        "exit_code": extra.get("exit_code"),
+        "interactive": extra.get("interactive"),
+        "source": extra.get("source"),
+        "workspace_root": extra.get("workspace_root"),
+        "team_name": extra.get("team_name"),
+        "enable_tools": extra.get("enable_tools"),
+        "enable_spawn": extra.get("enable_spawn"),
+        "enable_teams": extra.get("enable_teams"),
+        "parent_session_id": extra.get("parent_session_id"),
+        "parent_agent_id": extra.get("parent_agent_id"),
+        "agent_id": extra.get("agent_id"),
+        "is_subagent": extra.get("is_subagent"),
+        "cline_title": extra.get("cline_title"),
+        "git_branch": extra.get("git_branch"),
+        "checkpoint_latest": extra.get("checkpoint_latest"),
+        "session_origin": extra.get("session_origin"),
+        "usage": session.usage,
+        "aggregate_usage": session.aggregate_usage,
+        "total_cost": session.total_cost,
+        "aggregated_agents_cost": session.aggregated_agents_cost,
+        "models": session.models,
+    }
+
+
+def _compute_totals(sessions):
+    totals = {
+        "sessions": len(sessions),
+        "messages": 0,
+        "sessions_with_usage": 0,
+        "sessions_with_cost": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_cost": None,
+    }
+    cost = 0.0
+    for info in sessions:
+        totals["messages"] += info.get("message_count") or 0
+        usage = info.get("usage")
+        if usage:
+            totals["sessions_with_usage"] += 1
+            for key in _TOKEN_KEYS:
+                value = usage.get(key)
+                if isinstance(value, (int, float)):
+                    totals[key] += int(value)
+        total_cost = info.get("total_cost")
+        if isinstance(total_cost, (int, float)):
+            cost += float(total_cost)
+            totals["sessions_with_cost"] += 1
+    if totals["sessions_with_cost"]:
+        totals["total_cost"] = cost
+    return totals
+
 
 def _unique_dir(base, name):
     folder = base / name
@@ -82,13 +156,10 @@ def export_session(
     )
     out_file.write_text(markdown, encoding="utf-8")
 
-    return {
-        "id": session.id,
-        "name": session.name,
-        "created": session.created_str(),
-        "file": str(out_file),
-        **fidelity,
-    }
+    info = _session_metadata(session)
+    info["file"] = str(out_file)
+    info.update(fidelity)
+    return info
 
 
 def export_all(
@@ -141,6 +212,8 @@ def export_all(
         except OSError as exc:
             print(f"Error exporting {session.id}: {exc}", file=sys.stderr)
 
+    manifest["totals"] = _compute_totals(manifest["sessions"])
+
     manifest_file = run_root / "manifest.json"
     manifest_file.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -165,15 +238,8 @@ def _raw_jsonl_lines(sessions_root, limit):
 def _wrapped_jsonl_lines(sessions_root, limit):
     sessions = discover_sessions(sessions_root, limit=limit)
     for session in sessions:
-        payload = {
-            "id": session.id,
-            "name": session.name,
-            "created": session.created_str(),
-            "provider": session.provider,
-            "model": session.model,
-            "cwd": session.cwd,
-            "messages": session.messages,
-        }
+        payload = _session_metadata(session)
+        payload["messages"] = session.messages
         yield json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 

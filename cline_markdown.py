@@ -197,6 +197,49 @@ def _bool(value):
     return str(bool(value)).lower()
 
 
+def _fmt_int(value):
+    return f"{value:,}" if isinstance(value, int) else "unknown"
+
+
+def _fmt_cost(value):
+    if isinstance(value, (int, float)):
+        return f"${value:.6f}"
+    return "unknown"
+
+
+def _append_usage(lines, usage):
+    lines.append("usage:")
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    ):
+        value = usage.get(key)
+        lines.append(f"  {key}: {value if value is not None else 'null'}")
+    cost = usage.get("total_cost")
+    lines.append(f"  total_cost: {cost if cost is not None else 'null'}")
+
+
+def _append_models(lines, models):
+    lines.append("models:")
+    for model in models:
+        lines.append(f"  - id: {_yaml(model.get('id') or '')}")
+        lines.append(f"    provider: {_yaml(model.get('provider') or '')}")
+        family = model.get("family")
+        if family:
+            lines.append(f"    family: {_yaml(family)}")
+        lines.append(f"    messages: {model.get('messages')}")
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        ):
+            value = model.get(key)
+            lines.append(f"    {key}: {value if value is not None else 'null'}")
+
+
 def session_to_markdown(
     session,
     mode="clean",
@@ -284,6 +327,20 @@ def session_to_markdown(
         front.append(f"model: {_yaml(session.model)}")
     if session.cwd:
         front.append(f"cwd: {_yaml(session.cwd)}")
+
+    extra = session.extra_meta
+    if extra.get("status"):
+        front.append(f"status: {_yaml(extra['status'])}")
+    if extra.get("ended_at"):
+        front.append(f"ended_at: {_yaml(extra['ended_at'])}")
+
+    usage = session.usage
+    if usage:
+        _append_usage(front, usage)
+    models = session.models
+    if models:
+        _append_models(front, models)
+
     front.extend(
         [
             "---",
@@ -297,6 +354,32 @@ def session_to_markdown(
             f"- **Faithful:** {'yes' if faithful else 'no'}",
         ]
     )
+    if extra.get("status"):
+        status = f"- **Status:** {extra['status']}"
+        if extra.get("exit_code") is not None:
+            status += f" (exit {extra['exit_code']})"
+        front.append(status)
+    if extra.get("ended_at"):
+        front.append(f"- **Ended:** {extra['ended_at']}")
+    if usage:
+        front.append(
+            "- **Tokens:** "
+            f"{_fmt_int(usage.get('input_tokens'))} in · "
+            f"{_fmt_int(usage.get('output_tokens'))} out · "
+            f"cache read {_fmt_int(usage.get('cache_read_tokens'))} · "
+            f"cache write {_fmt_int(usage.get('cache_write_tokens'))}"
+        )
+        front.append(f"- **Cost:** {_fmt_cost(usage.get('total_cost'))}")
+    else:
+        front.append("- **Tokens:** unknown")
+    if models:
+        labels = []
+        for model in models:
+            label = model.get("id") or "unknown"
+            if model.get("messages"):
+                label += f" ({model['messages']} msgs)"
+            labels.append(label)
+        front.append(f"- **Models:** {', '.join(labels)}")
     if truncated:
         front.append(
             f"- **Truncated:** {stats['truncated_parts']} part(s) "

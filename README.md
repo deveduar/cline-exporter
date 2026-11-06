@@ -51,6 +51,14 @@ On Windows: `C:\Users\<YourUser>\.cline\data\sessions\`.
 Each message has `role` (`user`/`assistant`), `ts`, and `content` as a list of
 parts: `text`, `thinking`, `tool_use`, `tool_result`.
 
+`<id>.json` also carries `status`, `ended_at`, `exit_code`, `workspace_root`,
+`team_name`, `enable_*`, and a `metadata` object with `usage`, `aggregateUsage`,
+`totalCost`, `aggregatedAgentsCost`, `git`, `checkpoint`, `title`, and
+`sessionHistoryOrigin`.
+
+Assistant messages may include `modelInfo` (`id`, `provider`, `family`) and
+`metrics` (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`).
+
 ## Output layout (one folder per run)
 
 Every `export` run creates its own folder, so manifests never overwrite each
@@ -209,14 +217,20 @@ python cline_exporter.py jsonl
 ```
 
 By default this writes `./cline_exports/all_sessions.jsonl`, one line per
-session with metadata:
+session with metadata, usage, models, and the full raw messages:
 
 ```json
-{"id":"...","name":"...","created":"...","provider":"...","model":"...","cwd":"...","messages":[...]}
+{"id":"...","name":"...","created":"...","message_count":355,"provider":"cline","model":"cline-free/nemotron-3.5-super-vl","cwd":"...","status":"failed","ended_at":"...","exit_code":1,"usage":{"input_tokens":15107058,"output_tokens":28055,"cache_read_tokens":13771136,"cache_write_tokens":0,"total_cost":0.0},"aggregate_usage":null,"total_cost":0.0,"aggregated_agents_cost":0.0,"models":[...],"messages":[...]}
 ```
 
 JSONL always contains the full raw messages, regardless of mode or filters.
-Use `--raw` for one line per `<id>.messages.json` file (unwrapped).
+`usage`, `total_cost` and `models` come from the session metadata, not from the
+Markdown filters. `aggregate_usage` is populated only when it differs from
+`usage` (for example, when subagents are involved); otherwise it is `null`.
+
+Use `--raw` for one line per `<id>.messages.json` file (unwrapped). In that
+case only the raw messages are written, so session-level usage/cost is not
+included (it lives in the sibling `<id>.json`).
 
 ## Fidelity metadata
 
@@ -248,14 +262,50 @@ source_format: "cline-cli-3.x"
 provider: "cline"
 model: "cline-free/nemotron-3.5-super-vl"
 cwd: "C:\\...\\my-project"
+status: "failed"
+ended_at: "2026-11-05T03:07:50.546Z"
+usage:
+  input_tokens: 15107058
+  output_tokens: 28055
+  cache_read_tokens: 13771136
+  cache_write_tokens: 0
+  total_cost: 0.0
+models:
+  - id: "cline-free/nemotron-3.5-super-vl"
+    provider: "cline"
+    family: "nemotron"
+    messages: 165
+    input_tokens: 15107058
+    output_tokens: 28055
+    cache_read_tokens: 13771136
+    cache_write_tokens: 0
 ```
 
 `faithful` is `true` only when nothing was truncated **and** nothing was
 omitted. `omitted_*` counts parts left out by the mode or `--no-*` flags.
 
+`usage` is taken from Cline's `metadata.usage` (falling back to the sum of the
+per-message `metrics` if needed). `total_cost` is Cline's own accounting from
+`metadata.totalCost`; the exporter **does not recalculate costs**. A cost of
+`0` means Cline reported zero (for example, a free model), while `null` means
+the value is unknown.
+
+`models` is aggregated from the assistant messages' `modelInfo`. Sessions that
+switch models during the conversation get one entry per model, with the number
+of messages and tokens for each. Cost is only available per session, so it is
+not split per model.
+
+If the session uses subagents, `usage` covers this session's messages while
+`metadata.aggregateUsage` may include subagent sessions stored in other
+folders. In that case the manifest and JSONL include `aggregate_usage` and
+`aggregated_agents_cost` separately.
+
 Each run's `manifest.json` records the run folder, mode, include flags,
-truncation settings, sessions root, and every session with its output path and
-the same fidelity fields.
+truncation settings, sessions root, and every session with its output path,
+the same fidelity fields, usage/cost/models, and the curated Cline metadata
+(`status`, `ended_at`, `workspace_root`, `team_name`, `git_branch`,
+`checkpoint_latest`, `session_origin`, subagent fields). It also includes a
+`totals` object with session/message counts and summed tokens/cost.
 
 ## Finding the sessions path on Windows
 
