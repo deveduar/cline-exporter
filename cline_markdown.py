@@ -329,6 +329,7 @@ def session_to_markdown(
         front.append(f"cwd: {_yaml(session.cwd)}")
 
     extra = session.extra_meta
+    front.append(f"source: {_yaml(extra.get('source') or 'cli')}")
     if extra.get("status"):
         front.append(f"status: {_yaml(extra['status'])}")
     if extra.get("ended_at"):

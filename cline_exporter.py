@@ -28,7 +28,8 @@ from cline_sessions import (
 from cline_markdown import MODES, TRUNCATE_FROM, session_to_markdown
 
 DEFAULT_OUTPUT_DIR = "cline_exports"
-DEFAULT_JSONL = "cline_exports/all_sessions.jsonl"
+JSONL_FILENAME = "all_sessions.jsonl"
+RAW_JSONL_FILENAME = "all_sessions_raw.jsonl"
 
 _TOKEN_KEYS = (
     "input_tokens",
@@ -53,6 +54,8 @@ def _session_metadata(session):
         "exit_code": extra.get("exit_code"),
         "interactive": extra.get("interactive"),
         "source": extra.get("source"),
+        "source_root": str(session.folder.parent),
+        "source_format": "cline-cli-3.x",
         "workspace_root": extra.get("workspace_root"),
         "team_name": extra.get("team_name"),
         "enable_tools": extra.get("enable_tools"),
@@ -173,6 +176,7 @@ def export_all(
     truncate_thinking,
     truncate_tools,
     truncate_from,
+    write_jsonl_file=True,
 ):
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
@@ -184,6 +188,7 @@ def export_all(
     manifest = {
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "run_folder": str(run_root),
+        "source": "cli",
         "mode": mode,
         "include_thinking": include_thinking,
         "include_tool_use": include_tool_use,
@@ -214,6 +219,13 @@ def export_all(
 
     manifest["totals"] = _compute_totals(manifest["sessions"])
 
+    if write_jsonl_file:
+        jsonl_file = run_root / JSONL_FILENAME
+        write_jsonl(jsonl_file, (_session_jsonl_line(s) for s in sessions))
+        manifest["jsonl_file"] = str(jsonl_file)
+    else:
+        manifest["jsonl_file"] = None
+
     manifest_file = run_root / "manifest.json"
     manifest_file.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -235,12 +247,16 @@ def _raw_jsonl_lines(sessions_root, limit):
         yield json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
+def _session_jsonl_line(session):
+    payload = _session_metadata(session)
+    payload["messages"] = session.messages
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def _wrapped_jsonl_lines(sessions_root, limit):
     sessions = discover_sessions(sessions_root, limit=limit)
     for session in sessions:
-        payload = _session_metadata(session)
-        payload["messages"] = session.messages
-        yield json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        yield _session_jsonl_line(session)
 
 
 def write_jsonl(output_file, lines):
@@ -253,6 +269,37 @@ def write_jsonl(output_file, lines):
             fh.write("\n")
             count += 1
     return count
+
+
+def export_jsonl(sessions_root, limit, out_root, raw=False):
+    base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    run_ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_root = _unique_dir(base, f"{run_ts}_jsonl")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    filename = RAW_JSONL_FILENAME if raw else JSONL_FILENAME
+    output_file = run_root / filename
+    if raw:
+        lines = _raw_jsonl_lines(sessions_root, limit)
+    else:
+        lines = _wrapped_jsonl_lines(sessions_root, limit)
+    count = write_jsonl(output_file, lines)
+
+    manifest = {
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "run_folder": str(run_root),
+        "source": "cli",
+        "raw": raw,
+        "sessions_root": str(sessions_root),
+        "limit": limit,
+        "jsonl_file": str(output_file),
+        "session_count": count,
+    }
+    (run_root / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return manifest
 
 
 def _resolve_sessions_root(args):
@@ -294,6 +341,11 @@ def build_parser():
         "--out",
         default=None,
         help=f"Output base folder (default: ./{DEFAULT_OUTPUT_DIR})",
+    )
+    p_export.add_argument(
+        "--no-jsonl",
+        action="store_true",
+        help="Do not write all_sessions.jsonl inside the run folder",
     )
     p_export.add_argument("--mode", choices=MODES, default="clean")
     p_export.add_argument(
@@ -344,12 +396,12 @@ def build_parser():
     p_jsonl = sub.add_parser(
         "jsonl",
         parents=[common],
-        help="Write sessions to a JSONL file",
+        help="Write sessions to a JSONL run folder",
     )
     p_jsonl.add_argument(
-        "--output",
-        default=DEFAULT_JSONL,
-        help=f"Output file (default: ./{DEFAULT_JSONL})",
+        "--out",
+        default=None,
+        help=f"Output base folder (default: ./{DEFAULT_OUTPUT_DIR})",
     )
     p_jsonl.add_argument("--limit", type=int, default=None)
     p_jsonl.add_argument(
@@ -430,19 +482,14 @@ def main():
             truncate_thinking,
             truncate_tools,
             args.truncate_from,
+            write_jsonl_file=not args.no_jsonl,
         )
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
     elif args.command == "jsonl":
-        if args.raw:
-            lines = _raw_jsonl_lines(sessions_root, args.limit)
-        else:
-            lines = _wrapped_jsonl_lines(sessions_root, args.limit)
-        count = write_jsonl(args.output, lines)
-        print(
-            json.dumps(
-                {"output": args.output, "sessions": count}, ensure_ascii=False
-            )
+        manifest = export_jsonl(
+            sessions_root, args.limit, args.out, args.raw
         )
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

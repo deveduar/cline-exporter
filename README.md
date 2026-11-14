@@ -6,13 +6,7 @@ It reads the local files Cline stores under `~/.cline/data/sessions/` and
 converts them to Markdown. It does not support the legacy `ui_messages.json`
 schema.
 
-## Disclaimer
-
-- **Tested only with Cline CLI** (latest version, 3.x). May not work with earlier versions.
-- **For Cline CLI only.** Not designed to work with other tools.
-- **Not affiliated:** This project is not affiliated with, approved, or endorsed by Cline, Inc. or any related entity. It is an independent project.
-
-## Requirements
+## Requirementsaqui tienes a
 
 - Python 3.10+
 
@@ -37,52 +31,16 @@ python cline_exporter.py export --mode full --no-thinking  --no-tools
 
 Each `export` run creates its own folder so manifests never overwrite each other.
 
-## Layout read from Cline CLI 3.x
+## Disclaimer
 
-```
-~/.cline/data/sessions/
-  <id>/
-    <id>.json            # metadata: started_at, prompt, provider, model, cwd...
-    <id>.messages.json   # { messages: [ { role, ts, content: [...] } ] }
-```
+- **Tested only with Cline CLI** (latest version, 3.x). May not work with earlier versions.
+- **For Cline CLI only.** Not designed to work with other tools.
+- **Not affiliated:** This project is not affiliated with, approved, or endorsed by Cline, Inc. or any related entity. It is an independent project.
 
-On Windows: `C:\Users\<YourUser>\.cline\data\sessions\`.
-
-Each message has `role` (`user`/`assistant`), `ts`, and `content` as a list of
-parts: `text`, `thinking`, `tool_use`, `tool_result`.
-
-`<id>.json` also carries `status`, `ended_at`, `exit_code`, `workspace_root`,
-`team_name`, `enable_*`, and a `metadata` object with `usage`, `aggregateUsage`,
-`totalCost`, `aggregatedAgentsCost`, `git`, `checkpoint`, `title`, and
-`sessionHistoryOrigin`.
-
-Assistant messages may include `modelInfo` (`id`, `provider`, `family`) and
-`metrics` (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`).
-
-## Output layout (one folder per run)
-
-Every `export` run creates its own folder, so manifests never overwrite each
-other:
-
-```
-cline_exports/
-  2026-11-05_034500_clean/            # <export_timestamp>_<mode>
-    manifest.json                     # manifest for this run only
-    2026-11-04_195915_my-task_clean/  # <session_timestamp>_<slug>_<mode>
-      my-task_clean.md                # <slug>_<mode>.md
-  2026-11-05_035120_full/
-    manifest.json
-    2026-11-04_195915_my-task_full/
-      my-task_full.md
-```
-
-- Sessions are ordered by `started_at` (newest first).
-- The mode appears in the run folder, the session folder and the file name.
-- JSONL is global (no mode/filters apply): `./cline_exports/all_sessions.jsonl`.
 
 ## Command reference
 
-### `export`
+### Export
 
 ```bash
 python cline_exporter.py export [options]
@@ -92,6 +50,7 @@ python cline_exporter.py export [options]
 |--------|---------|-------------|
 | `--limit N` | `all` | Maximum number of sessions (omit for all) |
 | `--out DIR` | `./cline_exports` | Base output folder |
+| `--no-jsonl` | off | Do not write `all_sessions.jsonl` in the run folder |
 | `--mode {clean,full}` | `clean` | Detail level |
 | `--no-thinking` | off | `full` only: omit reasoning |
 | `--no-tools` | off | `full` only: omit tool calls and results |
@@ -101,20 +60,6 @@ python cline_exporter.py export [options]
 | `--truncate-thinking N` | `--truncate` | `full` only: limit for thinking |
 | `--truncate-tools N` | `--truncate` | `full` only: limit for tool results |
 | `--truncate-from {end,start}` | `end` | Side to keep when truncating |
-| `--sessions-root PATH` | `~/.cline/data/sessions` | Sessions root |
-| `--data-dir PATH` | none | Resolve `<data-dir>/data/sessions` |
-
-### `jsonl`
-
-```bash
-python cline_exporter.py jsonl [options]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--output FILE` | `./cline_exports/all_sessions.jsonl` | Output file |
-| `--limit N` | none | Maximum number of sessions |
-| `--raw` | off | One line per `<id>.messages.json` (unwrapped) |
 | `--sessions-root PATH` | `~/.cline/data/sessions` | Sessions root |
 | `--data-dir PATH` | none | Resolve `<data-dir>/data/sessions` |
 
@@ -148,9 +93,9 @@ python cline_exporter.py export --mode full --truncate 4000 --truncate-from star
 # From an isolated data dir
 python cline_exporter.py export --data-dir ./my_project_history
 
-# JSONL with metadata / raw
+# JSONL with metadata / raw (each writes its own run folder)
 python cline_exporter.py jsonl
-python cline_exporter.py jsonl --raw --output ./cline_exports/raw.jsonl
+python cline_exporter.py jsonl --raw
 ```
 
 ## Truncation (`full` only)
@@ -213,14 +158,29 @@ python cline_exporter.py export --mode full --no-tool-results
 ## JSONL
 
 ```bash
-python cline_exporter.py jsonl
+python cline_exporter.py jsonl [options]
 ```
 
-By default this writes `./cline_exports/all_sessions.jsonl`, one line per
-session with metadata, usage, models, and the full raw messages:
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--out DIR` | `./cline_exports` | Base output folder |
+| `--limit N` | none | Maximum number of sessions |
+| `--raw` | off | One line per `<id>.messages.json` (unwrapped) |
+| `--sessions-root PATH` | `~/.cline/data/sessions` | Sessions root |
+| `--data-dir PATH` | none | Resolve `<data-dir>/data/sessions` |
+
+Each `jsonl` run creates its own `<out>/<timestamp>_jsonl/` folder with
+`manifest.json` and `all_sessions.jsonl` (`all_sessions_raw.jsonl` with
+`--raw`).
+
+Every `export` run writes `<run>/all_sessions.jsonl` next to its manifest (use
+`--no-jsonl` to skip it). The standalone `jsonl` command creates its own
+`<out>/<timestamp>_jsonl/` run folder instead of overwriting a global file.
+Each line contains one session with metadata, usage, models, and the full raw
+messages:
 
 ```json
-{"id":"...","name":"...","created":"...","message_count":355,"provider":"cline","model":"cline-free/nemotron-3.5-super-vl","cwd":"...","status":"failed","ended_at":"...","exit_code":1,"usage":{"input_tokens":15107058,"output_tokens":28055,"cache_read_tokens":13771136,"cache_write_tokens":0,"total_cost":0.0},"aggregate_usage":null,"total_cost":0.0,"aggregated_agents_cost":0.0,"models":[...],"messages":[...]}
+{"id":"...","name":"...","created":"...","message_count":355,"provider":"cline","model":"cline-free/nemotron-3.5-super-vl","cwd":"...","source":"cli","source_root":"...","source_format":"cline-cli-3.x","status":"failed","ended_at":"...","exit_code":1,"usage":{"input_tokens":15107058,"output_tokens":28055,"cache_read_tokens":13771136,"cache_write_tokens":0,"total_cost":0.0},"aggregate_usage":null,"total_cost":0.0,"aggregated_agents_cost":0.0,"models":[...],"messages":[...]}
 ```
 
 JSONL always contains the full raw messages, regardless of mode or filters.
@@ -228,9 +188,59 @@ JSONL always contains the full raw messages, regardless of mode or filters.
 Markdown filters. `aggregate_usage` is populated only when it differs from
 `usage` (for example, when subagents are involved); otherwise it is `null`.
 
-Use `--raw` for one line per `<id>.messages.json` file (unwrapped). In that
-case only the raw messages are written, so session-level usage/cost is not
-included (it lives in the sibling `<id>.json`).
+Use `--raw` for one line per `<id>.messages.json` file (unwrapped), written to
+`all_sessions_raw.jsonl` inside the run folder. In that case only the raw
+messages are written, so session-level usage/cost is not included (it lives in
+the sibling `<id>.json`).
+
+## Layout read from Cline CLI 3.x
+
+```
+~/.cline/data/sessions/
+  <id>/
+    <id>.json            # metadata: started_at, prompt, provider, model, cwd...
+    <id>.messages.json   # { messages: [ { role, ts, content: [...] } ] }
+```
+
+On Windows: `C:\Users\<YourUser>\.cline\data\sessions\`.
+
+Each message has `role` (`user`/`assistant`), `ts`, and `content` as a list of
+parts: `text`, `thinking`, `tool_use`, `tool_result`.
+
+`<id>.json` also carries `status`, `ended_at`, `exit_code`, `workspace_root`,
+`team_name`, `enable_*`, and a `metadata` object with `usage`, `aggregateUsage`,
+`totalCost`, `aggregatedAgentsCost`, `git`, `checkpoint`, `title`, and
+`sessionHistoryOrigin`.
+
+Assistant messages may include `modelInfo` (`id`, `provider`, `family`) and
+`metrics` (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`).
+
+## Output layout (one folder per run)
+
+Every `export` run creates its own folder, so manifests never overwrite each
+other:
+
+```
+cline_exports/
+  2026-11-05_034500_clean/            # <export_timestamp>_<mode>
+    manifest.json                     # manifest for this run only
+    all_sessions.jsonl                # JSONL for this run only
+    2026-11-04_195915_my-task_clean/  # <session_timestamp>_<slug>_<mode>
+      my-task_clean.md                # <slug>_<mode>.md
+  2026-11-05_035120_full/
+    manifest.json
+    all_sessions.jsonl
+    2026-11-04_195915_my-task_full/
+      my-task_full.md
+  2026-11-05_041000_jsonl/            # standalone `jsonl` run
+    manifest.json
+    all_sessions.jsonl
+```
+
+- Sessions are ordered by `started_at` (newest first).
+- The mode appears in the run folder, the session folder and the file name.
+- Every run writes its own `all_sessions.jsonl`, so runs never overwrite each
+  other. Use `aqui tienes ajsonl` to skip it during `export`.
 
 ## Fidelity metadata
 
@@ -300,12 +310,15 @@ If the session uses subagents, `usage` covers this session's messages while
 folders. In that case the manifest and JSONL include `aggregate_usage` and
 `aggregated_agents_cost` separately.
 
-Each run's `manifest.json` records the run folder, mode, include flags,
-truncation settings, sessions root, and every session with its output path,
-the same fidelity fields, usage/cost/models, and the curated Cline metadata
+Each run's `manifest.json` records the run folder, source, JSONL file, mode,
+include flags, truncation settings, sessions root, and every session with its
+output path, source/source_root, the same fidelity fields, usage/cost/models,
+and the curated Cline metadata
 (`status`, `ended_at`, `workspace_root`, `team_name`, `git_branch`,
 `checkpoint_latest`, `session_origin`, subagent fields). It also includes a
 `totals` object with session/message counts and summed tokens/cost.
+
+
 
 ## Finding the sessions path on Windows
 
@@ -316,11 +329,39 @@ Get-ChildItem "$env:USERPROFILE\.cline\data\sessions" -Recurse -Filter *.message
 $env:CLINE_DATA_DIR; $env:CLINE_DIR   # in case of an override
 ```
 
+## Using with VS Code Extension (Optional)
+
+If the extension stores sessions in the same SDK layout, point
+`--sessions-root` at its sessions folder. Candidate locations:
+
+- Windows: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline\data\sessions\`
+- macOS: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline/data/sessions/`
+- Linux: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline/data/sessions/`
+
+The old `tasks/<id>/ui_messages.json` layout is not supported.
+
+Although designed for Cline CLI, you can export your VS Code Cline sessions by pointing to the VS Code global storage directory:
+
+```bash
+# Example for macOS VS Code sessions
+python cline_exporter.py export --sessions-root "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline/data/sessions"
+```
+
 ## Windows notes
 
 - Paths with `\` work thanks to `pathlib`.
 - `started_at` (ISO with `Z`) is parsed correctly on Python 3.10+.
 - Folder names are sanitized to avoid invalid characters (`<>:"/\|?*`).
+
+## Roadmap
+
+- [ ] **Test with the VS Code extension.** It has not been tested, but it
+  should work when the extension stores sessions in the same SDK format
+  (`<data-dir>/sessions/<id>/<id>.json` + `<id>.messages.json`). Point
+  `--sessions-root` at the extension's sessions folder to try it.
+- [ ] **Test on macOS.** The macOS paths are documented but untested.
+- [ ] **Legacy extension layout.** The old
+  `tasks/<id>/ui_messages.json` schema is not supported.
 
 ## License
 
