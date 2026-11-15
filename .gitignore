@@ -1,5 +1,5 @@
 # Cline-exporter outputs
-cline_exports/
+exports/
 
 # Python
 __pycache__/

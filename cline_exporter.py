@@ -39,7 +39,7 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_NO_DATA = 3
 
-DEFAULT_OUTPUT_DIR = "cline_exports"
+DEFAULT_OUTPUT_DIR = "exports"
 JSONL_FILENAME = "all_sessions.jsonl"
 RAW_JSONL_FILENAME = "all_sessions_raw.jsonl"
 
@@ -188,7 +188,7 @@ def export_all(
     truncate_thinking,
     truncate_tools,
     truncate_from,
-    write_jsonl_file=True,
+    write_jsonl_file=False,
     dry_run=False,
     session_ids=None,
     since=None,
@@ -680,9 +680,9 @@ def build_parser():
         help=f"Output base folder (default: ./{DEFAULT_OUTPUT_DIR})",
     )
     p_export.add_argument(
-        "--no-jsonl",
+        "--jsonl",
         action="store_true",
-        help="Do not write all_sessions.jsonl inside the run folder",
+        help="Also write all_sessions.jsonl with full raw session data",
     )
     p_export.add_argument("--mode", choices=MODES, default="conversation")
     p_export.add_argument(
@@ -849,7 +849,7 @@ def main():
             truncate_thinking,
             truncate_tools,
             args.truncate_from,
-            write_jsonl_file=not args.no_jsonl,
+            write_jsonl_file=args.jsonl,
             dry_run=args.dry_run,
             session_ids=args.sessions,
             since=args.since,

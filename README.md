@@ -6,14 +6,14 @@ It reads the local files Cline stores under `~/.cline/data/sessions/` and
 converts them to Markdown. It does not support the legacy `ui_messages.json`
 schema.
 
-## Requirementsaqui tienes a
+## Requirements
 
 - Python 3.10+
 
 ## Quick Start
 
 ```bash
-# Conversation transcript (dialogue only) of all sessions — writes to ./cline_exports/<run>/
+# Conversation transcript (dialogue only) of all sessions — writes to ./exports/<run>/
 python cline_exporter.py export
 
 # Prompts only (user prompts without assistant responses)
@@ -21,6 +21,9 @@ python cline_exporter.py export --mode prompts
 
 # Full transcript: text + reasoning + tool calls/results
 python cline_exporter.py export --mode full
+
+# Full transcript plus the complete JSONL archive
+python cline_exporter.py export --mode full --jsonl
 
 # Truncate tool results only, keep reasoning untouched
 python cline_exporter.py export --mode full --truncate 4000 --truncate-thinking 0
@@ -49,8 +52,8 @@ python cline_exporter.py export [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--limit N` | `all` | Maximum number of sessions (omit for all) |
-| `--out DIR` | `./cline_exports` | Base output folder |
-| `--no-jsonl` | off | Do not write `all_sessions.jsonl` in the run folder |
+| `--out DIR` | `./exports` | Base output folder |
+| `--jsonl` | off | Also write `all_sessions.jsonl` with full raw session data |
 | `--mode {conversation,full,prompts}` | `conversation` | Detail level |
 | `--no-thinking` | off | `full` only: omit reasoning |
 | `--no-tools` | off | `full` only: omit tool calls and results |
@@ -181,6 +184,9 @@ python cline_exporter.py export --mode full --no-thinking
 # Reasoning only, no tools at all
 python cline_exporter.py export --mode full --no-tools
 
+# Dialogue-only Markdown using full mode's omission flags
+python cline_exporter.py export --mode full --no-thinking --no-tools
+
 # Keep tool results but drop tool calls
 python cline_exporter.py export --mode full --no-tool-use
 
@@ -189,6 +195,9 @@ python cline_exporter.py export --mode full --no-tool-results
 ```
 
 `--no-tools` is equivalent to `--no-tool-use --no-tool-results`.
+The last command produces the same dialogue-only Markdown content as
+`--mode conversation`; add `--jsonl` only when you also want the complete raw
+session archive in that bundle.
 
 ## JSONL
 
@@ -198,7 +207,7 @@ python cline_exporter.py jsonl [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--out DIR` | `./cline_exports` | Base output folder |
+| `--out DIR` | `./exports` | Base output folder |
 | `--limit N` | none | Maximum number of sessions |
 | `--raw` | off | One line per `<id>.messages.json` (unwrapped) |
 | `--sessions-root PATH` | `~/.cline/data/sessions` | Sessions root |
@@ -208,9 +217,9 @@ Each `jsonl` run creates its own `<out>/<timestamp>_jsonl/` folder with
 `manifest.json` and `all_sessions.jsonl` (`all_sessions_raw.jsonl` with
 `--raw`).
 
-Every `export` run writes `<run>/all_sessions.jsonl` next to its manifest (use
-`--no-jsonl` to skip it). The standalone `jsonl` command creates its own
-`<out>/<timestamp>_jsonl/` run folder instead of overwriting a global file.
+`export` writes Markdown and a manifest by default. Add `--jsonl` to include
+`all_sessions.jsonl` in that same run bundle. The standalone `jsonl` command
+creates its own `<out>/<timestamp>_jsonl/` run folder.
 Each line contains one session with metadata, usage, models, and the full raw
 messages:
 
@@ -256,15 +265,14 @@ Every `export` run creates its own folder, so manifests never overwrite each
 other:
 
 ```
-cline_exports/
+exports/
   2026-11-05_034500_conversation/            # <export_timestamp>_<mode>
     manifest.json                            # manifest for this run only
-    all_sessions.jsonl                       # JSONL for this run only
     2026-11-04_195915_my-task_conversation/  # <session_timestamp>_<slug>_<mode>
       my-task_conversation.md                # <slug>_<mode>.md
-  2026-11-05_035120_full/
+  2026-11-05_035120_full/                    # add --jsonl to include JSONL here
     manifest.json
-    all_sessions.jsonl
+    all_sessions.jsonl                       # only with --jsonl
     2026-11-04_195915_my-task_full/
       my-task_full.md
   2026-11-05_041000_jsonl/            # standalone `jsonl` run
@@ -274,8 +282,8 @@ cline_exports/
 
 - Sessions are ordered by `started_at` (newest first).
 - The mode appears in the run folder, the session folder and the file name.
-- Every run writes its own `all_sessions.jsonl`, so runs never overwrite each
-  other. Use `aqui tienes ajsonl` to skip it during `export`.
+- JSONL is opt-in for Markdown exports (`--jsonl`); the standalone `jsonl`
+  command always creates a JSONL-only run bundle.
 
 ## Fidelity metadata
 
