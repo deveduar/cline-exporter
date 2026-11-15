@@ -19,6 +19,9 @@ python cline_exporter.py export
 # Prompts only (user prompts without assistant responses)
 python cline_exporter.py export --mode prompts
 
+# Tool outputs only, without dialogue, reasoning, or tool calls
+python cline_exporter.py export --mode tool-results
+
 # Full transcript: text + reasoning + tool calls/results
 python cline_exporter.py export --mode full
 
@@ -54,14 +57,14 @@ python cline_exporter.py export [options]
 | `--limit N` | `all` | Maximum number of sessions (omit for all) |
 | `--out DIR` | `./exports` | Base output folder |
 | `--jsonl` | off | Also write `all_sessions.jsonl` with full raw session data |
-| `--mode {conversation,full,prompts}` | `conversation` | Detail level |
+| `--mode {conversation,full,prompts,tool-results}` | `conversation` | Detail level |
 | `--no-thinking` | off | `full` only: omit reasoning |
 | `--no-tools` | off | `full` only: omit tool calls and results |
 | `--no-tool-use` | off | `full` only: omit tool calls |
 | `--no-tool-results` | off | `full` only: omit tool results |
-| `--truncate N` | `0` | `full` only: default per-part limit; `0` = off |
+| `--truncate N` | `0` | `full` and `tool-results`: default per-part limit; `0` = off |
 | `--truncate-thinking N` | `--truncate` | `full` only: limit for thinking |
-| `--truncate-tools N` | `--truncate` | `full` only: limit for tool results |
+| `--truncate-tools N` | `--truncate` | `full` and `tool-results`: limit for tool results |
 | `--truncate-from {end,start}` | `end` | Side to keep when truncating |
 | `--dry-run` | off | Simulate run without creating folders or writing files |
 | `--quiet` | off | Suppress verbose output |
@@ -136,7 +139,7 @@ python cline_exporter.py jsonl
 python cline_exporter.py jsonl --raw
 ```
 
-## Truncation (`full` only)
+## Truncation (`full` and `tool-results`)
 
 Truncation is **disabled by default** (`0` = no limit). Enable it explicitly and
 per part type:
@@ -160,6 +163,8 @@ How the flags interact:
 - `--truncate N` sets the default limit for both truncatable types.
 - `--truncate-thinking N` overrides the limit for `thinking` parts.
 - `--truncate-tools N` overrides the limit for `tool_result` parts.
+- In `tool-results` mode, only tool results are included and only
+  `--truncate-tools` (or the shared `--truncate`) applies.
 - A value of `0` disables truncation for that type.
 - `--truncate-from {end,start}` controls which side is kept:
   - `end` (default): keep the beginning, drop the end.

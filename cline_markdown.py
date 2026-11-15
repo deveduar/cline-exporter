@@ -4,16 +4,18 @@ Modes:
     full          -> text, thinking, tool_use, tool_result (each can be disabled)
     conversation  -> text parts only (User and Cline dialogues, default)
     prompts       -> user prompts only (role: user)
+    tool-results  -> tool_result parts only
 
 Truncation is opt-in per part type via `truncate_thinking` and
-`truncate_tools` (0 disables each one). It only applies to `full`; `conversation`
-and `prompts` have nothing truncatable. `text` and the `tool_use` input are never truncated.
+`truncate_tools` (0 disables each one). It applies to `full` and `tool-results`;
+`conversation` and `prompts` have nothing truncatable. `text` and the `tool_use`
+input are never truncated.
 """
 
 import json
 from datetime import datetime
 
-MODES = ("full", "conversation", "prompts")
+MODES = ("full", "conversation", "prompts", "tool-results")
 TRUNCATE_FROM = ("end", "start")
 
 _ROLE_HEADERS = {
@@ -95,11 +97,14 @@ def _render_part(
     ptype = part.get("type")
 
     if ptype == "text":
+        if mode == "tool-results":
+            stats["omitted_text"] += 1
+            return None
         text = (part.get("text") or "").strip()
         return text or None
 
     if ptype == "thinking":
-        if mode in ("conversation", "prompts") or not include_thinking:
+        if mode in ("conversation", "prompts", "tool-results") or not include_thinking:
             stats["omitted_thinking"] += 1
             return None
         thinking = (part.get("thinking") or "").strip()
@@ -114,7 +119,7 @@ def _render_part(
         )
 
     if ptype == "tool_use":
-        if mode in ("conversation", "prompts") or not include_tool_use:
+        if mode in ("conversation", "prompts", "tool-results") or not include_tool_use:
             stats["omitted_tool_use"] += 1
             return None
         name = part.get("name") or "tool"
@@ -135,7 +140,7 @@ def _render_part(
     if not ptype:
         return None
 
-    if mode in ("conversation", "prompts"):
+    if mode in ("conversation", "prompts", "tool-results"):
         stats["omitted_other"] += 1
         return None
     return f"#### {ptype}\n\n```json\n{_json_block(part)}\n```"
@@ -261,6 +266,10 @@ def session_to_markdown(
         include_thinking = False
         include_tool_use = False
         include_tool_results = False
+    elif mode == "tool-results":
+        include_thinking = False
+        include_tool_use = False
+        include_tool_results = True
 
     stats = {
         "truncated_parts": 0,
@@ -269,6 +278,7 @@ def session_to_markdown(
         "omitted_thinking": 0,
         "omitted_tool_use": 0,
         "omitted_tool_results": 0,
+        "omitted_text": 0,
         "omitted_other": 0,
     }
     messages = session.messages
@@ -294,6 +304,7 @@ def session_to_markdown(
         stats["omitted_thinking"]
         + stats["omitted_tool_use"]
         + stats["omitted_tool_results"]
+        + stats["omitted_text"]
         + stats["omitted_other"]
     )
     truncated = stats["truncated_parts"] > 0
@@ -321,6 +332,7 @@ def session_to_markdown(
         f"omitted_thinking: {stats['omitted_thinking']}",
         f"omitted_tool_use: {stats['omitted_tool_use']}",
         f"omitted_tool_results: {stats['omitted_tool_results']}",
+        f"omitted_text: {stats['omitted_text']}",
         f"omitted_other: {stats['omitted_other']}",
         f"source_format: {_yaml('cline-cli-3.x')}",
     ]
@@ -411,6 +423,7 @@ def session_to_markdown(
         "omitted_thinking": stats["omitted_thinking"],
         "omitted_tool_use": stats["omitted_tool_use"],
         "omitted_tool_results": stats["omitted_tool_results"],
+        "omitted_text": stats["omitted_text"],
         "omitted_other": stats["omitted_other"],
     }
     markdown = "\n".join(front) + "\n" + "\n".join(body) + "\n"

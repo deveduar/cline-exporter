@@ -779,6 +779,14 @@ def _resolve_export_options(args):
             )
         return False, False, False, 0, 0
 
+    if args.mode == "tool-results":
+        truncate_tools = (
+            args.truncate_tools
+            if args.truncate_tools is not None
+            else args.truncate
+        )
+        return False, False, True, 0, truncate_tools
+
     include_thinking = not args.no_thinking
     include_tool_use = not (args.no_tools or args.no_tool_use)
     include_tool_results = not (args.no_tools or args.no_tool_results)
