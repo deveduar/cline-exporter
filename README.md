@@ -13,8 +13,11 @@ schema.
 ## Quick Start
 
 ```bash
-# Clean transcript (text only) of all sessions — writes to ./cline_exports/<run>/
+# Conversation transcript (dialogue only) of all sessions — writes to ./cline_exports/<run>/
 python cline_exporter.py export
+
+# Prompts only (user prompts without assistant responses)
+python cline_exporter.py export --mode prompts
 
 # Full transcript: text + reasoning + tool calls/results
 python cline_exporter.py export --mode full
@@ -24,9 +27,6 @@ python cline_exporter.py export --mode full --truncate 4000 --truncate-thinking 
 
 # JSONL dump of all sessions
 python cline_exporter.py jsonl
-
-# Only conversation
-python cline_exporter.py export --mode full --no-thinking  --no-tools
 ```
 
 Each `export` run creates its own folder so manifests never overwrite each other.
@@ -51,7 +51,7 @@ python cline_exporter.py export [options]
 | `--limit N` | `all` | Maximum number of sessions (omit for all) |
 | `--out DIR` | `./cline_exports` | Base output folder |
 | `--no-jsonl` | off | Do not write `all_sessions.jsonl` in the run folder |
-| `--mode {clean,full}` | `clean` | Detail level |
+| `--mode {conversation,full,prompts}` | `conversation` | Detail level |
 | `--no-thinking` | off | `full` only: omit reasoning |
 | `--no-tools` | off | `full` only: omit tool calls and results |
 | `--no-tool-use` | off | `full` only: omit tool calls |
@@ -60,8 +60,43 @@ python cline_exporter.py export [options]
 | `--truncate-thinking N` | `--truncate` | `full` only: limit for thinking |
 | `--truncate-tools N` | `--truncate` | `full` only: limit for tool results |
 | `--truncate-from {end,start}` | `end` | Side to keep when truncating |
+| `--dry-run` | off | Simulate run without creating folders or writing files |
+| `--quiet` | off | Suppress verbose output |
 | `--sessions-root PATH` | `~/.cline/data/sessions` | Sessions root |
 | `--data-dir PATH` | none | Resolve `<data-dir>/data/sessions` |
+| `--sessions IDS` | none | Comma-separated list of session IDs to select |
+| `--since YYYY-MM-DD` | none | Filter sessions created on or after date |
+| `--filter TEXT` | none | Filter sessions matching text in title or ID |
+
+### Preflight Check
+
+```bash
+# Human-readable check
+python cline_exporter.py --check
+
+# Machine-readable JSON output for launchers and automation
+python cline_exporter.py --check --json
+```
+
+### List Sessions
+
+```bash
+# Text table listing
+python cline_exporter.py --list-sessions
+
+# Machine-readable JSON listing
+python cline_exporter.py --list-sessions --json
+
+# Filter and sort
+python cline_exporter.py --list-sessions --limit 10 --since 2026-11-01 --order created-desc
+```
+
+### Exit Codes
+
+- `0`: Success / ready (data found).
+- `1`: Error (missing source directory, unreadable file, runtime failure).
+- `2`: Invalid CLI usage or arguments.
+- `3`: No data (sessions directory found but empty, or filters matched 0 sessions).
 
 ## Examples
 
@@ -135,7 +170,7 @@ characters:
 [... truncated 7755 chars ...]
 ```
 
-In `clean` mode these flags are ignored (there is no reasoning or tool output).
+In `conversation` and `prompts` modes these flags are ignored (there is no reasoning or tool output).
 
 ## Removing parts in `full`
 
@@ -222,11 +257,11 @@ other:
 
 ```
 cline_exports/
-  2026-11-05_034500_clean/            # <export_timestamp>_<mode>
-    manifest.json                     # manifest for this run only
-    all_sessions.jsonl                # JSONL for this run only
-    2026-11-04_195915_my-task_clean/  # <session_timestamp>_<slug>_<mode>
-      my-task_clean.md                # <slug>_<mode>.md
+  2026-11-05_034500_conversation/            # <export_timestamp>_<mode>
+    manifest.json                            # manifest for this run only
+    all_sessions.jsonl                       # JSONL for this run only
+    2026-11-04_195915_my-task_conversation/  # <session_timestamp>_<slug>_<mode>
+      my-task_conversation.md                # <slug>_<mode>.md
   2026-11-05_035120_full/
     manifest.json
     all_sessions.jsonl
@@ -251,7 +286,7 @@ id: "..."
 name: "..."
 created: "2026-11-04 19:59:15"
 messages: 355
-export_mode: clean
+export_mode: conversation
 faithful: false
 include_thinking: false
 include_tool_use: false

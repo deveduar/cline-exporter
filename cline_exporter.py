@@ -10,7 +10,10 @@ Usage:
     python cline_exporter.py export --mode full --no-thinking
     python cline_exporter.py export --mode full --no-tools --truncate 4000
     python cline_exporter.py export --mode full --truncate 4000 --truncate-from start
+    python cline_exporter.py export --dry-run
     python cline_exporter.py jsonl
+    python cline_exporter.py --check --json
+    python cline_exporter.py --list-sessions --json
 """
 
 import argparse
@@ -21,11 +24,20 @@ from pathlib import Path
 
 from cline_sessions import (
     DEFAULT_SESSIONS_ROOT,
+    count_sessions,
     discover_sessions,
+    filter_sessions,
     resolve_data_dir_sessions,
     slugify,
 )
 from cline_markdown import MODES, TRUNCATE_FROM, session_to_markdown
+
+VERSION = "1.0.0"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_NO_DATA = 3
 
 DEFAULT_OUTPUT_DIR = "cline_exports"
 JSONL_FILENAME = "all_sessions.jsonl"
@@ -177,15 +189,65 @@ def export_all(
     truncate_tools,
     truncate_from,
     write_jsonl_file=True,
+    dry_run=False,
+    session_ids=None,
+    since=None,
+    filter_text=None,
 ):
+    sessions = discover_sessions(sessions_root)
+    if session_ids or since or filter_text or limit:
+        sessions = filter_sessions(
+            sessions,
+            last=limit,
+            since=since,
+            session_ids=session_ids,
+            filter_text=filter_text,
+        )
+
+    if dry_run:
+        sessions_meta = [_session_metadata(s) for s in sessions]
+        totals = _compute_totals(sessions_meta)
+        manifest = {
+            "tool": "cline_exporter",
+            "version": VERSION,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "run_folder": None,
+            "dry_run": True,
+            "writes": False,
+            "source": "cli",
+            "mode": mode,
+            "include_thinking": include_thinking,
+            "include_tool_use": include_tool_use,
+            "include_tool_results": include_tool_results,
+            "truncate_thinking": truncate_thinking,
+            "truncate_tools": truncate_tools,
+            "truncate_from": truncate_from,
+            "sessions_root": str(sessions_root),
+            "session_count": len(sessions),
+            "sessions": [
+                {
+                    "id": s["id"],
+                    "name": s["name"],
+                    "created": s["created"],
+                    "message_count": s["message_count"],
+                    "model": s["model"],
+                    "status": s["status"],
+                }
+                for s in sessions_meta
+            ],
+            "totals": totals,
+        }
+        return manifest
+
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
     run_ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_root = _unique_dir(base, f"{run_ts}_{mode}")
     run_root.mkdir(parents=True, exist_ok=True)
 
-    sessions = discover_sessions(sessions_root, limit=limit)
     manifest = {
+        "tool": "cline_exporter",
+        "version": VERSION,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "run_folder": str(run_root),
         "source": "cli",
@@ -197,6 +259,7 @@ def export_all(
         "truncate_tools": truncate_tools,
         "truncate_from": truncate_from,
         "sessions_root": str(sessions_root),
+        "session_count": len(sessions),
         "sessions": [],
     }
     for session in sessions:
@@ -271,7 +334,43 @@ def write_jsonl(output_file, lines):
     return count
 
 
-def export_jsonl(sessions_root, limit, out_root, raw=False):
+def export_jsonl(
+    sessions_root,
+    limit,
+    out_root,
+    raw=False,
+    dry_run=False,
+    session_ids=None,
+    since=None,
+    filter_text=None,
+):
+    sessions = discover_sessions(sessions_root)
+    if session_ids or since or filter_text or limit:
+        sessions = filter_sessions(
+            sessions,
+            last=limit,
+            since=since,
+            session_ids=session_ids,
+            filter_text=filter_text,
+        )
+
+    if dry_run:
+        manifest = {
+            "tool": "cline_exporter",
+            "version": VERSION,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "run_folder": None,
+            "dry_run": True,
+            "writes": False,
+            "source": "cli",
+            "raw": raw,
+            "sessions_root": str(sessions_root),
+            "limit": limit,
+            "jsonl_file": None,
+            "session_count": len(sessions),
+        }
+        return manifest
+
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
     run_ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -281,12 +380,25 @@ def export_jsonl(sessions_root, limit, out_root, raw=False):
     filename = RAW_JSONL_FILENAME if raw else JSONL_FILENAME
     output_file = run_root / filename
     if raw:
-        lines = _raw_jsonl_lines(sessions_root, limit)
+        if session_ids or since or filter_text or limit:
+            files = [s.messages_file for s in sessions if s.messages_file.exists()]
+            lines = []
+            for path in files:
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    lines.append(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+                except (json.JSONDecodeError, OSError) as exc:
+                    print(f"Skipping {path}: {exc}", file=sys.stderr)
+        else:
+            lines = list(_raw_jsonl_lines(sessions_root, limit))
     else:
-        lines = _wrapped_jsonl_lines(sessions_root, limit)
+        lines = [_session_jsonl_line(s) for s in sessions]
+
     count = write_jsonl(output_file, lines)
 
     manifest = {
+        "tool": "cline_exporter",
+        "version": VERSION,
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "run_folder": str(run_root),
         "source": "cli",
@@ -302,18 +414,183 @@ def export_jsonl(sessions_root, limit, out_root, raw=False):
     return manifest
 
 
+def check_preflight(sessions_root, as_json=False):
+    root = Path(sessions_root)
+    source_exists = root.exists()
+    is_dir = root.is_dir() if source_exists else False
+
+    if not source_exists or not is_dir:
+        res = {
+            "tool": "cline_exporter",
+            "version": VERSION,
+            "status": "error",
+            "ok": False,
+            "sessions_root": str(sessions_root),
+            "session_count": None,
+            "no_data_reason": None,
+            "error": f"Sessions root directory does not exist or is not a directory: {sessions_root}",
+            "writes": False,
+        }
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print(f"Error: {res['error']}", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        count = count_sessions(root)
+    except OSError as exc:
+        res = {
+            "tool": "cline_exporter",
+            "version": VERSION,
+            "status": "error",
+            "ok": False,
+            "sessions_root": str(sessions_root),
+            "session_count": None,
+            "no_data_reason": None,
+            "error": str(exc),
+            "writes": False,
+        }
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if count == 0:
+        res = {
+            "tool": "cline_exporter",
+            "version": VERSION,
+            "status": "no_data",
+            "ok": True,
+            "sessions_root": str(sessions_root),
+            "session_count": 0,
+            "no_data_reason": f"No Cline sessions found in {sessions_root}",
+            "error": None,
+            "writes": False,
+        }
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print(f"Sessions root: {sessions_root} (0 sessions found)")
+        return EXIT_NO_DATA
+
+    res = {
+        "tool": "cline_exporter",
+        "version": VERSION,
+        "status": "ready",
+        "ok": True,
+        "sessions_root": str(sessions_root),
+        "session_count": count,
+        "no_data_reason": None,
+        "error": None,
+        "writes": False,
+    }
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print(f"Sessions root: {sessions_root} ({count} session(s) found)")
+    return EXIT_OK
+
+
+def list_sessions_cmd(
+    sessions_root,
+    last=None,
+    since=None,
+    session_ids=None,
+    filter_text=None,
+    order="created-desc",
+    as_json=False,
+):
+    root = Path(sessions_root)
+    if not root.is_dir():
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "tool": "cline_exporter",
+                        "version": VERSION,
+                        "ok": False,
+                        "status": "error",
+                        "source": {
+                            "resolved": str(sessions_root),
+                            "exists": False,
+                            "origin": "cli",
+                        },
+                        "sessions_found": 0,
+                        "error": f"Sessions directory not found: {sessions_root}",
+                        "writes": False,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(f"Error: Sessions directory not found: {sessions_root}", file=sys.stderr)
+        return EXIT_ERROR
+
+    sessions = discover_sessions(root)
+    filtered = filter_sessions(
+        sessions,
+        last=last,
+        since=since,
+        session_ids=session_ids,
+        filter_text=filter_text,
+        order=order,
+    )
+
+    if as_json:
+        session_list = []
+        for s in filtered:
+            session_list.append(
+                {
+                    "id": s.id,
+                    "title": s.name,
+                    "created": s.created.isoformat() if s.created else None,
+                    "updated": s.updated.isoformat() if s.updated else None,
+                    "message_count": len(s.messages),
+                    "model": s.model,
+                    "cwd": s.cwd,
+                    "status": s.extra_meta.get("status"),
+                    "source_file": str(s.messages_file),
+                }
+            )
+        res = {
+            "tool": "cline_exporter",
+            "version": VERSION,
+            "ok": True,
+            "status": "ready" if session_list else "no_data",
+            "source": {
+                "resolved": str(sessions_root),
+                "exists": True,
+                "origin": "cli",
+            },
+            "sessions_found": len(session_list),
+            "no_data_reason": "No sessions matched selection" if not session_list else None,
+            "writes": False,
+            "sessions": session_list,
+        }
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        if not filtered:
+            print("Sessions found: 0")
+        else:
+            print(f"Sessions found: {len(filtered)}")
+            for s in filtered:
+                dt_str = s.created_str()
+                msg_count = len(s.messages)
+                print(f"{dt_str}  {s.id:<36}  {s.name}  [{msg_count} msgs]")
+
+    return EXIT_OK if filtered else EXIT_NO_DATA
+
+
 def _resolve_sessions_root(args):
-    if args.data_dir:
+    if getattr(args, "data_dir", None):
         return resolve_data_dir_sessions(args.data_dir)
     return Path(args.sessions_root)
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(
-        description="Export Cline CLI sessions to Markdown and JSONL"
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--sessions-root",
@@ -325,17 +602,77 @@ def build_parser():
         default=None,
         help="Cline data dir; resolves the sessions folder automatically",
     )
+    common.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate run without writing output directories or files",
+    )
+    common.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress output during export",
+    )
+    common.add_argument(
+        "--json",
+        action="store_true",
+        help="Format output as JSON for check or list",
+    )
+    common.add_argument(
+        "--limit",
+        "--last",
+        dest="limit",
+        type=int,
+        default=None,
+        help="Maximum number of sessions (default: all)",
+    )
+    common.add_argument(
+        "--sessions",
+        default=None,
+        help="Comma-separated session IDs to filter",
+    )
+    common.add_argument(
+        "--since",
+        default=None,
+        help="Filter sessions created on or after date (YYYY-MM-DD)",
+    )
+    common.add_argument(
+        "--filter",
+        default=None,
+        help="Filter sessions by text in title or ID",
+    )
+    common.add_argument(
+        "--order",
+        choices=["created-desc", "created-asc", "updated-desc", "updated-asc"],
+        default="created-desc",
+        help="Ordering for listing sessions",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Export Cline CLI sessions to Markdown and JSONL",
+        parents=[common],
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Run preflight check and exit",
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List sessions and exit",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {VERSION}",
+    )
+
+    sub = parser.add_subparsers(dest="command", required=False)
 
     p_export = sub.add_parser(
         "export",
         parents=[common],
         help="Export sessions to Markdown folders",
-    )
-    p_export.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Maximum number of sessions (default: all)",
     )
     p_export.add_argument(
         "--out",
@@ -347,7 +684,7 @@ def build_parser():
         action="store_true",
         help="Do not write all_sessions.jsonl inside the run folder",
     )
-    p_export.add_argument("--mode", choices=MODES, default="clean")
+    p_export.add_argument("--mode", choices=MODES, default="conversation")
     p_export.add_argument(
         "--no-thinking",
         action="store_true",
@@ -403,18 +740,28 @@ def build_parser():
         default=None,
         help=f"Output base folder (default: ./{DEFAULT_OUTPUT_DIR})",
     )
-    p_jsonl.add_argument("--limit", type=int, default=None)
     p_jsonl.add_argument(
         "--raw",
         action="store_true",
         help="One line per <id>.messages.json file (no metadata wrapper)",
     )
 
+    sub.add_parser(
+        "check",
+        parents=[common],
+        help="Perform preflight check",
+    )
+    sub.add_parser(
+        "list",
+        parents=[common],
+        help="List sessions",
+    )
+
     return parser
 
 
 def _resolve_export_options(args):
-    if args.mode == "clean":
+    if args.mode in ("conversation", "prompts"):
         ignored = (
             args.no_thinking
             or args.no_tools
@@ -424,9 +771,9 @@ def _resolve_export_options(args):
             or args.truncate_thinking is not None
             or args.truncate_tools is not None
         )
-        if ignored:
+        if ignored and not getattr(args, "quiet", False):
             print(
-                "Note: clean mode exports text only; "
+                f"Note: {args.mode} mode exports text only; "
                 "truncation and omission flags are ignored.",
                 file=sys.stderr,
             )
@@ -463,6 +810,26 @@ def main():
     args = parser.parse_args()
     sessions_root = _resolve_sessions_root(args)
 
+    if args.check or args.command == "check":
+        sys.exit(check_preflight(sessions_root, as_json=args.json))
+
+    if args.list_sessions or args.command == "list":
+        sys.exit(
+            list_sessions_cmd(
+                sessions_root,
+                last=args.limit,
+                since=args.since,
+                session_ids=args.sessions,
+                filter_text=args.filter,
+                order=args.order,
+                as_json=args.json,
+            )
+        )
+
+    if not args.command:
+        parser.print_help(sys.stderr)
+        sys.exit(EXIT_USAGE)
+
     if args.command == "export":
         (
             include_thinking,
@@ -483,13 +850,51 @@ def main():
             truncate_tools,
             args.truncate_from,
             write_jsonl_file=not args.no_jsonl,
+            dry_run=args.dry_run,
+            session_ids=args.sessions,
+            since=args.since,
+            filter_text=args.filter,
         )
-        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        count = manifest.get("session_count", len(manifest.get("sessions", [])))
+        if args.json:
+            print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        elif not getattr(args, "quiet", False):
+            if args.dry_run:
+                print(
+                    f"[dry-run] {count} session(s) found ({args.mode}); no files written"
+                )
+            else:
+                run_folder = manifest.get("run_folder")
+                print(f"Exported {count} session(s) ({args.mode}) to: {run_folder}")
+
+        if args.dry_run and count == 0:
+            sys.exit(EXIT_NO_DATA)
+        sys.exit(EXIT_OK)
+
     elif args.command == "jsonl":
         manifest = export_jsonl(
-            sessions_root, args.limit, args.out, args.raw
+            sessions_root,
+            args.limit,
+            args.out,
+            args.raw,
+            dry_run=args.dry_run,
+            session_ids=args.sessions,
+            since=args.since,
+            filter_text=args.filter,
         )
-        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        count = manifest.get("session_count", 0)
+        if args.json:
+            print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        elif not getattr(args, "quiet", False):
+            if args.dry_run:
+                print(f"[dry-run] {count} session(s) found (jsonl); no files written")
+            else:
+                out_file = manifest.get("jsonl_file")
+                print(f"Exported {count} session(s) to: {out_file}")
+
+        if args.dry_run and count == 0:
+            sys.exit(EXIT_NO_DATA)
+        sys.exit(EXIT_OK)
 
 
 if __name__ == "__main__":

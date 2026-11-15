@@ -223,6 +223,15 @@ class Session:
             self._created = self._extract_created()
         return self._created
 
+    @property
+    def updated(self):
+        ended = self.extra_meta.get("ended_at")
+        if ended:
+            dt = _parse_started_at(ended)
+            if dt:
+                return dt
+        return self.created
+
     def created_str(self, fmt="%Y-%m-%d %H:%M:%S"):
         return self.created.strftime(fmt) if self.created else "unknown"
 
@@ -408,6 +417,100 @@ def resolve_data_dir_sessions(data_dir):
         ):
             return sub
     return base / "data" / "sessions"
+
+
+def count_sessions(sessions_root=None):
+    """Count sessions quickly without parsing JSON."""
+    if sessions_root is None:
+        sessions_root = DEFAULT_SESSIONS_ROOT
+    root = Path(sessions_root)
+    if not root.is_dir():
+        return 0
+    count = 0
+    for folder in root.iterdir():
+        if folder.is_dir() and (folder / f"{folder.name}.messages.json").is_file():
+            count += 1
+    return count
+
+
+def filter_sessions(
+    sessions,
+    last=None,
+    since=None,
+    session_ids=None,
+    filter_text=None,
+    order="created-desc",
+):
+    """Filter and sort a list of Session objects."""
+    result = list(sessions)
+
+    if session_ids:
+        if isinstance(session_ids, str):
+            id_set = {s.strip() for s in session_ids.split(",") if s.strip()}
+        else:
+            id_set = {str(s).strip() for s in session_ids if str(s).strip()}
+        if id_set:
+            result = [s for s in result if s.id in id_set]
+
+    if since:
+        since_dt = None
+        if isinstance(since, str):
+            raw = since.strip()
+            if len(raw) == 10 and raw.count("-") == 2:
+                raw += "T00:00:00"
+            try:
+                since_dt = datetime.fromisoformat(raw)
+            except ValueError:
+                since_dt = None
+        elif isinstance(since, datetime):
+            since_dt = since
+
+        if since_dt:
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            filtered = []
+            for s in result:
+                if not s.created:
+                    continue
+                s_dt = s.created
+                if s_dt.tzinfo is not None and since_dt.tzinfo is None:
+                    since_dt = since_dt.astimezone(s_dt.tzinfo)
+                elif s_dt.tzinfo is None and since_dt.tzinfo is not None:
+                    s_dt = s_dt.replace(tzinfo=timezone.utc)
+                if s_dt >= since_dt:
+                    filtered.append(s)
+            result = filtered
+
+    if filter_text:
+        needle = filter_text.strip().lower()
+        result = [
+            s
+            for s in result
+            if (s.name and needle in s.name.lower()) or needle in s.id.lower()
+        ]
+
+    # Ordering
+    if order == "created-asc":
+        result.sort(key=lambda s: s.created.timestamp() if s.created else 0)
+    elif order == "created-desc":
+        result.sort(
+            key=lambda s: s.created.timestamp() if s.created else 0,
+            reverse=True,
+        )
+    elif order == "updated-asc":
+        result.sort(
+            key=lambda s: s.updated.timestamp() if s.updated else (s.created.timestamp() if s.created else 0)
+        )
+    elif order == "updated-desc":
+        result.sort(
+            key=lambda s: s.updated.timestamp() if s.updated else (s.created.timestamp() if s.created else 0),
+            reverse=True,
+        )
+
+    if last is not None and last > 0:
+        result = result[:last]
+
+    return result
 
 
 def slugify(name, max_len=60):

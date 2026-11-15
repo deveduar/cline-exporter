@@ -1,18 +1,19 @@
 """Convert Cline CLI 3.x sessions to Markdown with fidelity tracking.
 
 Modes:
-    full  -> text, thinking, tool_use, tool_result (each can be disabled)
-    clean -> text parts only (default)
+    full          -> text, thinking, tool_use, tool_result (each can be disabled)
+    conversation  -> text parts only (User and Cline dialogues, default)
+    prompts       -> user prompts only (role: user)
 
 Truncation is opt-in per part type via `truncate_thinking` and
-`truncate_tools` (0 disables each one). It only applies to `full`; `clean`
-has nothing truncatable. `text` and the `tool_use` input are never truncated.
+`truncate_tools` (0 disables each one). It only applies to `full`; `conversation`
+and `prompts` have nothing truncatable. `text` and the `tool_use` input are never truncated.
 """
 
 import json
 from datetime import datetime
 
-MODES = ("full", "clean")
+MODES = ("full", "conversation", "prompts")
 TRUNCATE_FROM = ("end", "start")
 
 _ROLE_HEADERS = {
@@ -98,7 +99,7 @@ def _render_part(
         return text or None
 
     if ptype == "thinking":
-        if mode == "clean" or not include_thinking:
+        if mode in ("conversation", "prompts") or not include_thinking:
             stats["omitted_thinking"] += 1
             return None
         thinking = (part.get("thinking") or "").strip()
@@ -113,7 +114,7 @@ def _render_part(
         )
 
     if ptype == "tool_use":
-        if mode == "clean" or not include_tool_use:
+        if mode in ("conversation", "prompts") or not include_tool_use:
             stats["omitted_tool_use"] += 1
             return None
         name = part.get("name") or "tool"
@@ -121,7 +122,7 @@ def _render_part(
         return f"#### Tool call: {name}\n\n```json\n{body}\n```"
 
     if ptype == "tool_result":
-        if mode == "clean" or not include_tool_results:
+        if mode in ("conversation", "prompts") or not include_tool_results:
             stats["omitted_tool_results"] += 1
             return None
         name = part.get("name") or "tool"
@@ -134,7 +135,7 @@ def _render_part(
     if not ptype:
         return None
 
-    if mode == "clean":
+    if mode in ("conversation", "prompts"):
         stats["omitted_other"] += 1
         return None
     return f"#### {ptype}\n\n```json\n{_json_block(part)}\n```"
@@ -152,6 +153,8 @@ def message_to_markdown(
     stats,
 ):
     role = msg.get("role") or "unknown"
+    if mode == "prompts" and role != "user":
+        return None
     header = _ROLE_HEADERS.get(role, role)
     content = msg.get("content")
     if isinstance(content, list):
@@ -242,7 +245,7 @@ def _append_models(lines, models):
 
 def session_to_markdown(
     session,
-    mode="clean",
+    mode="conversation",
     include_thinking=False,
     include_tool_use=False,
     include_tool_results=False,
@@ -251,10 +254,10 @@ def session_to_markdown(
     truncate_from="end",
 ):
     if mode not in MODES:
-        mode = "clean"
+        mode = "conversation"
     if truncate_from not in TRUNCATE_FROM:
         truncate_from = "end"
-    if mode == "clean":
+    if mode in ("conversation", "prompts"):
         include_thinking = False
         include_tool_use = False
         include_tool_results = False
