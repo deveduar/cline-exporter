@@ -97,6 +97,12 @@ python cline_exporter.py --list-sessions --json
 python cline_exporter.py --list-sessions --limit 10 --since 2026-11-01 --order created-desc
 ```
 
+The JSON listing includes `updated` and a `revision` token for each session.
+The revision combines the modification time and size of the source messages
+and session metadata files; use `updated` for display. It supports lightweight
+change checks by launchers and is not a content hash. Export `manifest.json`
+records the same per-session revision so it is available with the exported run.
+
 ### Exit Codes
 
 - `0`: Success / ready (data found).

@@ -55,6 +55,7 @@ def _session_metadata(session):
     extra = session.extra_meta
     return {
         "id": session.id,
+        "revision": _source_revision(session),
         "name": session.name,
         "created": session.created_str(),
         "message_count": len(session.messages),
@@ -87,6 +88,18 @@ def _session_metadata(session):
         "aggregated_agents_cost": session.aggregated_agents_cost,
         "models": session.models,
     }
+
+
+def _source_revision(session):
+    """Cheap revision token from Cline's message and session metadata files."""
+    revision = []
+    for source_path in (session.messages_file, session.meta_file):
+        try:
+            source_stat = source_path.stat()
+            revision.append((source_stat.st_mtime_ns, source_stat.st_size))
+        except OSError:
+            revision.append(None)
+    return revision
 
 
 def _compute_totals(sessions):
@@ -548,6 +561,7 @@ def list_sessions_cmd(
                     "title": s.name,
                     "created": s.created.isoformat() if s.created else None,
                     "updated": s.updated.isoformat() if s.updated else None,
+                    "revision": _source_revision(s),
                     "message_count": len(s.messages),
                     "model": s.model,
                     "cwd": s.cwd,
