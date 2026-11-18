@@ -19,7 +19,7 @@ Usage:
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cline_sessions import (
@@ -58,6 +58,9 @@ def _session_metadata(session):
         "revision": _source_revision(session),
         "name": session.name,
         "created": session.created_str(),
+        "updated": session.updated_at,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
         "message_count": len(session.messages),
         "provider": session.provider,
         "model": session.model,
@@ -145,11 +148,11 @@ def _unique_dir(base, name):
         index += 1
 
 
-def _unique_session_folder(run_root, ts_prefix, name_slug, mode, sid):
-    folder = run_root / f"{ts_prefix}_{name_slug}_{mode}"
+def _unique_session_folder(run_root, date_prefix, name_slug, sid):
+    folder = run_root / f"{date_prefix}_{name_slug}_{slugify(sid, 8)}"
     if not folder.exists():
         return folder
-    return run_root / f"{ts_prefix}_{name_slug}_{mode}_{slugify(sid, 8)}"
+    return run_root / f"{date_prefix}_{name_slug}_{slugify(sid, 12)}"
 
 
 def export_session(
@@ -163,14 +166,13 @@ def export_session(
     truncate_tools,
     truncate_from,
 ):
-    created = session.created
-    ts_prefix = created.strftime("%Y-%m-%d_%H%M%S") if created else "no-date"
+    updated = session.updated
+    updated_utc = updated.astimezone(timezone.utc) if updated else None
+    date_prefix = updated_utc.strftime("%Y-%m-%d") if updated_utc else "unknown-date"
     name_slug = slugify(session.name)
-    folder = _unique_session_folder(
-        run_root, ts_prefix, name_slug, mode, session.id
-    )
+    folder = _unique_session_folder(run_root, date_prefix, name_slug, session.id)
     folder.mkdir(parents=True, exist_ok=True)
-    out_file = folder / f"{name_slug}_{mode}.md"
+    out_file = folder / f"{date_prefix}_{name_slug}_{mode}.md"
 
     markdown, fidelity = session_to_markdown(
         session,
@@ -223,7 +225,7 @@ def export_all(
         manifest = {
             "tool": "cline_exporter",
             "version": VERSION,
-            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "run_folder": None,
             "dry_run": True,
             "writes": False,
@@ -254,14 +256,14 @@ def export_all(
 
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
-    run_ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_root = _unique_dir(base, f"{run_ts}_{mode}")
     run_root.mkdir(parents=True, exist_ok=True)
 
     manifest = {
         "tool": "cline_exporter",
         "version": VERSION,
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "run_folder": str(run_root),
         "source": "cli",
         "mode": mode,
@@ -371,7 +373,7 @@ def export_jsonl(
         manifest = {
             "tool": "cline_exporter",
             "version": VERSION,
-            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "run_folder": None,
             "dry_run": True,
             "writes": False,
@@ -386,7 +388,7 @@ def export_jsonl(
 
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
-    run_ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_root = _unique_dir(base, f"{run_ts}_jsonl")
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -412,7 +414,7 @@ def export_jsonl(
     manifest = {
         "tool": "cline_exporter",
         "version": VERSION,
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "run_folder": str(run_root),
         "source": "cli",
         "raw": raw,
@@ -559,8 +561,10 @@ def list_sessions_cmd(
                 {
                     "id": s.id,
                     "title": s.name,
-                    "created": s.created.isoformat() if s.created else None,
-                    "updated": s.updated.isoformat() if s.updated else None,
+                    "created": s.created_at,
+                    "updated": s.updated_at,
+                    "created_at": s.created_at,
+                    "updated_at": s.updated_at,
                     "revision": _source_revision(s),
                     "message_count": len(s.messages),
                     "model": s.model,

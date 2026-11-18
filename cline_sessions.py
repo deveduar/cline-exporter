@@ -51,6 +51,12 @@ def derive_title(text, max_len=80):
     return line
 
 
+def _iso_utc(value):
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def _parse_started_at(value):
     if not isinstance(value, str) or not value.strip():
         return None
@@ -63,7 +69,7 @@ def _parse_started_at(value):
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone()
+    return dt.astimezone(timezone.utc)
 
 
 def _load_json(path):
@@ -203,17 +209,17 @@ class Session:
             ts = msg.get("ts")
             if isinstance(ts, (int, float)) and ts > 0:
                 try:
-                    return datetime.fromtimestamp(ts / 1000)
+                    return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
                 except (ValueError, OSError, OverflowError):
                     break
         match = _TS_RE.match(self.id)
         if match:
             try:
-                return datetime.fromtimestamp(int(match.group(1)) / 1000)
+                return datetime.fromtimestamp(int(match.group(1)) / 1000, tz=timezone.utc)
             except (ValueError, OSError, OverflowError):
                 pass
         try:
-            return datetime.fromtimestamp(self.messages_file.stat().st_mtime)
+            return datetime.fromtimestamp(self.messages_file.stat().st_mtime, tz=timezone.utc)
         except OSError:
             return None
 
@@ -225,15 +231,34 @@ class Session:
 
     @property
     def updated(self):
-        ended = self.extra_meta.get("ended_at")
+        candidates = []
+        ended = _parse_started_at(self.extra_meta.get("ended_at"))
         if ended:
-            dt = _parse_started_at(ended)
-            if dt:
-                return dt
-        return self.created
+            candidates.append(ended)
+        for source_path in (self.messages_file, self.meta_file):
+            try:
+                candidates.append(datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc))
+            except (OSError, OverflowError, ValueError):
+                pass
+        for message in self.messages:
+            ts = message.get("ts") if isinstance(message, dict) else None
+            if isinstance(ts, (int, float)) and ts > 0:
+                try:
+                    candidates.append(datetime.fromtimestamp(ts / 1000, tz=timezone.utc))
+                except (OSError, OverflowError, ValueError):
+                    pass
+        return max(candidates) if candidates else self.created
 
-    def created_str(self, fmt="%Y-%m-%d %H:%M:%S"):
-        return self.created.strftime(fmt) if self.created else "unknown"
+    @property
+    def created_at(self):
+        return _iso_utc(self.created)
+
+    @property
+    def updated_at(self):
+        return _iso_utc(self.updated)
+
+    def created_str(self, fmt="%Y-%m-%dT%H:%M:%SZ"):
+        return self.created.astimezone(timezone.utc).strftime(fmt) if self.created else "unknown"
 
     @property
     def provider(self):

@@ -97,11 +97,15 @@ python cline_exporter.py --list-sessions --json
 python cline_exporter.py --list-sessions --limit 10 --since 2026-11-01 --order created-desc
 ```
 
-The JSON listing includes `updated` and a `revision` token for each session.
-The revision combines the modification time and size of the source messages
-and session metadata files; use `updated` for display. It supports lightweight
-change checks by launchers and is not a content hash. Export `manifest.json`
-records the same per-session revision so it is available with the exported run.
+The JSON listing includes `created_at` and `updated_at` in UTC ISO 8601 (`Z`)
+form, plus a `revision` token for each session. `created` and `updated` remain
+compatibility aliases. The revision combines the modification time and size of
+the source messages and session metadata files; use `updated_at` for display and
+ordering. It supports lightweight change checks by launchers and is not a
+content hash. Export `manifest.json` records the same per-session timestamps and
+revision. Run folders use UTC `YYYYMMDDTHHMMSSZ` stamps. Session folders use
+`YYYY-MM-DD_<title>_<short-id>`, with the UTC last-modified date; Markdown files
+also begin with that date.
 
 ### Exit Codes
 
@@ -277,22 +281,22 @@ other:
 
 ```
 exports/
-  2026-11-05_034500_conversation/            # <export_timestamp>_<mode>
-    manifest.json                            # manifest for this run only
-    2026-11-04_195915_my-task_conversation/  # <session_timestamp>_<slug>_<mode>
-      my-task_conversation.md                # <slug>_<mode>.md
-  2026-11-05_035120_full/                    # add --jsonl to include JSONL here
+  20261105T034500Z_conversation/              # <UTC run timestamp>_<mode>
+    manifest.json                              # manifest for this run only
+    2026-11-17_my-task_01a087aa/                 # <UTC update date>_<slug>_<short-id>
+      2026-11-17_my-task_conversation.md         # <UTC update date>_<slug>_<mode>.md
+  20261105T035120Z_full/                       # add --jsonl to include JSONL here
     manifest.json
     all_sessions.jsonl                       # only with --jsonl
-    2026-11-04_195915_my-task_full/
-      my-task_full.md
-  2026-11-05_041000_jsonl/            # standalone `jsonl` run
+    2026-11-17_my-task_01a087aa/
+      2026-11-17_my-task_full.md
+  20261105T041000Z_jsonl/                      # standalone `jsonl` run
     manifest.json
     all_sessions.jsonl
 ```
 
 - Sessions are ordered by `started_at` (newest first).
-- The mode appears in the run folder, the session folder and the file name.
+- The mode appears in the run folder and the Markdown file name.
 - JSONL is opt-in for Markdown exports (`--jsonl`); the standalone `jsonl`
   command always creates a JSONL-only run bundle.
 
