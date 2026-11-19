@@ -1,4 +1,4 @@
-# Cline-exporter outputs
+# Default output
 exports/
 
 # Python
@@ -31,7 +31,3 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
-
-# Misc
-plan.md
-archive/
