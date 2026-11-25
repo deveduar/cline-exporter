@@ -4,11 +4,17 @@ Expected layout:
     <sessions_root>/<id>/<id>.json            session metadata
     <sessions_root>/<id>/<id>.messages.json   messages
 
-The legacy `ui_messages.json` schema is not supported.
+A root session folder may also hold subagent transcripts named
+``<agent>.messages.json`` or ``<agent>__<task>.messages.json``. Their session
+IDs are derived as ``<root>__<agent>`` or ``<root>__<agent>__<task>``. The legacy
+`ui_messages.json` schema is not supported.
 """
 
+import hashlib
 import json
+import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +23,7 @@ DEFAULT_SESSIONS_ROOT = Path.home() / ".cline" / "data" / "sessions"
 _TS_RE = re.compile(r"^(\d{10,})")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+_PROJECT_RE = re.compile(r'[^a-zA-Z0-9_.-]+')
 
 _USAGE_FIELDS = (
     ("inputTokens", "input_tokens"),
@@ -25,6 +32,17 @@ _USAGE_FIELDS = (
     ("cacheWriteTokens", "cache_write_tokens"),
 )
 _TOKEN_KEYS = tuple(snake for _, snake in _USAGE_FIELDS)
+_MESSAGE_SUFFIX = ".messages.json"
+_CHILD_TRANSCRIPT_RE = re.compile(r"^[\w.-]+(?:__[\w.-]+)?$")
+_DB_ID_KEYS = ("id", "session_id", "sessionId", "thread_id", "threadId")
+_DB_PARENT_KEYS = (
+    "parent_id",
+    "parent_session_id",
+    "parent_thread_id",
+    "parentId",
+    "parentSessionId",
+    "parentThreadId",
+)
 
 
 def derive_title(text, max_len=80):
@@ -94,6 +112,132 @@ def _as_float(value):
         return None
 
 
+def _coerce_id(value):
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _first_value(data, keys):
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, "", False):
+            return value
+    return None
+
+
+def _agent_identifier(value):
+    identifier = _coerce_id(value)
+    if identifier:
+        return identifier
+    if isinstance(value, dict):
+        for key in ("id", "agentId", "agent_id", "name", "type"):
+            identifier = _coerce_id(value.get(key))
+            if identifier:
+                return identifier
+    return None
+
+
+def _transcript_origin(document):
+    origin = document.get("origin") if isinstance(document, dict) else None
+    return origin if isinstance(origin, dict) else {}
+
+
+def _quote_identifier(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _db_parent_map(sessions_root):
+    root = Path(sessions_root)
+    candidates = (
+        root / "db" / "sessions.db",
+        root.parent / "db" / "sessions.db",
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        parents = {}
+        try:
+            connection = sqlite3.connect(
+                path.resolve().as_uri() + "?mode=ro", uri=True
+            )
+            try:
+                tables = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                ]
+                for table in tables:
+                    columns = [
+                        row[1]
+                        for row in connection.execute(
+                            f"PRAGMA table_info({_quote_identifier(table)})"
+                        )
+                    ]
+                    id_column = next(
+                        (key for key in _DB_ID_KEYS if key in columns), None
+                    )
+                    parent_column = next(
+                        (key for key in _DB_PARENT_KEYS if key in columns), None
+                    )
+                    if not id_column or not parent_column:
+                        continue
+                    query = (
+                        f"SELECT {_quote_identifier(id_column)}, "
+                        f"{_quote_identifier(parent_column)} "
+                        f"FROM {_quote_identifier(table)}"
+                    )
+                    for sid, parent in connection.execute(query):
+                        sid = _coerce_id(sid)
+                        parent = _coerce_id(parent)
+                        if sid and parent:
+                            parents[sid] = parent
+            finally:
+                connection.close()
+        except (sqlite3.Error, OSError, ValueError):
+            continue
+        if parents:
+            return parents
+    return {}
+
+
+def project_key_from_path(value):
+    if not isinstance(value, str):
+        return ""
+    normalized = re.sub(r"/+", "/", value.replace("\\", "/")).rstrip("/")
+    if not normalized:
+        return ""
+    windows_drive = re.match(r"^([A-Za-z]):/(.*)$", normalized)
+    wsl_drive = re.match(r"^/mnt/([A-Za-z])/(.*)$", normalized, flags=re.IGNORECASE)
+    if windows_drive:
+        return f"{windows_drive.group(1)}:/{windows_drive.group(2)}".casefold()
+    if wsl_drive:
+        return f"{wsl_drive.group(1)}:/{wsl_drive.group(2)}".casefold()
+    return normalized.casefold() if os.name == "nt" else normalized
+
+
+def project_hash(key):
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def project_from_path(value):
+    if not isinstance(value, str):
+        return ""
+    candidate = value.replace("\\", "/").rstrip("/ \t")
+    if not candidate:
+        return ""
+    candidate = candidate.rsplit("/", 1)[-1].strip()
+    if not candidate or candidate in (".", ".."):
+        return ""
+    candidate = _PROJECT_RE.sub("-", candidate).strip("-._")
+    return candidate[:60].strip("-._")
+
+
 def _normalize_usage(raw):
     """Normalize a Cline usage block, keeping unknown values as None."""
     if not isinstance(raw, dict):
@@ -133,12 +277,24 @@ def _sum_message_metrics(messages):
 
 
 class Session:
-    def __init__(self, folder):
+    def __init__(self, folder, transcript=None, db_parents=None, session_id=None):
         self.folder = Path(folder)
-        self.id = self.folder.name
-        self.meta_file = self.folder / f"{self.id}.json"
-        self.messages_file = self.folder / f"{self.id}.messages.json"
+        self.root_id = self.folder.name
+        root_transcript = self.folder / f"{self.root_id}{_MESSAGE_SUFFIX}"
+        self.transcript = Path(transcript) if transcript is not None else root_transcript
+        self.transcript_stem = (
+            self.transcript.name[: -len(_MESSAGE_SUFFIX)] or self.root_id
+        )
+        self.id = session_id or self.transcript_stem
+        self.is_root_transcript = self.transcript == root_transcript
+        meta_file = self.transcript.with_name(f"{self.id}.json")
+        if not meta_file.exists():
+            meta_file = self.transcript.with_name(f"{self.transcript_stem}.json")
+        self.meta_file = meta_file
+        self.messages_file = self.transcript
+        self._db_parents = db_parents or {}
         self._meta = None
+        self._document = None
         self._messages = None
         self._name = None
         self._created = None
@@ -149,6 +305,8 @@ class Session:
         self._models = None
         self._models_loaded = False
         self._extra = None
+        self._project = None
+        self._project_key = None
 
     @property
     def meta(self):
@@ -158,9 +316,16 @@ class Session:
         return self._meta
 
     @property
+    def document(self):
+        if self._document is None:
+            data = _load_json(self.messages_file)
+            self._document = data if isinstance(data, (dict, list)) else {}
+        return self._document
+
+    @property
     def messages(self):
         if self._messages is None:
-            data = _load_json(self.messages_file)
+            data = self.document
             if isinstance(data, dict):
                 msgs = data.get("messages")
             elif isinstance(data, list):
@@ -273,6 +438,38 @@ class Session:
         return self.meta.get("cwd") or ""
 
     @property
+    def project_key(self):
+        if self._project_key is None:
+            self._project_key = (
+                project_key_from_path(self.cwd)
+                or project_key_from_path(self.extra_meta.get("workspace_root"))
+                or "no-project"
+            )
+        return self._project_key
+
+    @property
+    def project_id(self):
+        return project_hash(self.project_key)
+
+    @property
+    def project(self):
+        if self._project is None:
+            self._project = (
+                project_from_path(self.cwd)
+                or project_from_path(self.extra_meta.get("workspace_root"))
+                or "no-project"
+            )
+        return self._project
+
+    @property
+    def export_date(self):
+        modified = self.updated
+        created = self.created
+        if modified and created and modified < created:
+            return created
+        return modified or created
+
+    @property
     def metadata(self):
         data = self.meta.get("metadata")
         return data if isinstance(data, dict) else {}
@@ -373,6 +570,7 @@ class Session:
         if self._extra is None:
             meta = self.meta
             metadata = self.metadata
+            document = self.document if isinstance(self.document, dict) else {}
             checkpoint = metadata.get("checkpoint")
             latest = (
                 checkpoint.get("latest")
@@ -380,7 +578,70 @@ class Session:
                 else None
             )
             git = metadata.get("git")
-            origin = metadata.get("sessionHistoryOrigin")
+            origin = _transcript_origin(document)
+            declared_origin = metadata.get("sessionHistoryOrigin")
+            if not isinstance(declared_origin, dict):
+                declared_origin = document.get("origin")
+            parent_thread_id = _coerce_id(
+                _first_value(origin, ("parentThreadId", "parent_thread_id"))
+            )
+            subagent = _first_value(origin, ("subagent", "subAgent"))
+            parent_agent_id = _coerce_id(
+                _first_value(meta, ("parent_agent_id", "parentAgentId"))
+            )
+            if parent_agent_id is None:
+                parent_agent_id = _coerce_id(
+                    _first_value(
+                        origin,
+                        ("parentAgentId", "parent_agent_id", "parentAgent", "parent_agent"),
+                    )
+                )
+            if parent_agent_id is None and isinstance(subagent, dict):
+                parent_agent_id = _coerce_id(
+                    _first_value(
+                        subagent,
+                        ("parentAgentId", "parent_agent_id", "parentAgent", "parent_agent"),
+                    )
+                )
+            db_parent = (
+                self._db_parents.get(self.id)
+                or self._db_parents.get(self.transcript_stem)
+                or self._db_parents.get(self.root_id)
+            )
+            agent_id = _agent_identifier(subagent)
+            if agent_id is None:
+                agent_id = _agent_identifier(
+                    _first_value(meta, ("agent_id", "agentId"))
+                )
+            if agent_id is None:
+                agent_id = _agent_identifier(document.get("agentId"))
+            if agent_id is None and self.is_root_transcript:
+                agent_id = _agent_identifier(document.get("agent"))
+            is_subagent = meta.get("is_subagent", meta.get("isSubagent"))
+            if is_subagent is None:
+                is_subagent = bool(
+                    not self.is_root_transcript
+                    or parent_thread_id
+                    or subagent is not None
+                    or db_parent
+                )
+            parent_session_id = parent_thread_id
+            if parent_session_id is None:
+                parent_session_id = _coerce_id(
+                    _first_value(
+                        meta,
+                        (
+                            "parent_session_id",
+                            "parentSessionId",
+                            "parent_thread_id",
+                            "parentThreadId",
+                        ),
+                    )
+                )
+            if parent_session_id is None:
+                parent_session_id = db_parent
+            if parent_session_id is None and is_subagent and not self.is_root_transcript:
+                parent_session_id = self.root_id
             self._extra = {
                 "status": meta.get("status"),
                 "ended_at": meta.get("ended_at"),
@@ -392,10 +653,10 @@ class Session:
                 "enable_tools": meta.get("enable_tools"),
                 "enable_spawn": meta.get("enable_spawn"),
                 "enable_teams": meta.get("enable_teams"),
-                "parent_session_id": meta.get("parent_session_id"),
-                "parent_agent_id": meta.get("parent_agent_id"),
-                "agent_id": meta.get("agent_id"),
-                "is_subagent": meta.get("is_subagent"),
+                "parent_session_id": parent_session_id,
+                "parent_agent_id": parent_agent_id,
+                "agent_id": agent_id,
+                "is_subagent": is_subagent,
                 "cline_title": metadata.get("title"),
                 "git_branch": (
                     git.get("branch") if isinstance(git, dict) else None
@@ -404,24 +665,61 @@ class Session:
                     latest if isinstance(latest, dict) else None
                 ),
                 "session_origin": (
-                    origin if isinstance(origin, dict) else None
+                    declared_origin
+                    if isinstance(declared_origin, dict)
+                    else (origin or None)
                 ),
+                "root_session_id": self.root_id,
+                "is_root_transcript": self.is_root_transcript,
+                "agent": document.get("agent"),
+                "agent_type": _coerce_id(
+                    _first_value(document, ("agentType", "agent_type"))
+                ),
+                "parent_thread_id": parent_thread_id,
+                "origin_parent_thread_id": parent_thread_id,
+                "origin_subagent": (
+                    subagent
+                    if isinstance(subagent, (dict, str))
+                    else None
+                ),
+                "db_parent_session_id": db_parent,
             }
         return self._extra
 
 
-def discover_sessions(sessions_root=None, limit=None):
+def discover_sessions(sessions_root=None, limit=None, include_subagents=True):
     """Discover local sessions, newest first (by started_at)."""
     if sessions_root is None:
         sessions_root = DEFAULT_SESSIONS_ROOT
     root = Path(sessions_root)
     sessions = []
     if root.is_dir():
-        for folder in root.iterdir():
+        db_parents = _db_parent_map(root) if include_subagents else {}
+        for folder in sorted(root.iterdir(), key=lambda item: item.name):
             if not folder.is_dir():
                 continue
-            if (folder / f"{folder.name}.messages.json").is_file():
-                sessions.append(Session(folder))
+            root_transcript = folder / f"{folder.name}{_MESSAGE_SUFFIX}"
+            if not root_transcript.is_file():
+                continue
+            sessions.append(Session(folder, db_parents=db_parents))
+            if not include_subagents:
+                continue
+            for transcript in sorted(folder.iterdir(), key=lambda item: item.name):
+                if transcript == root_transcript or not transcript.is_file():
+                    continue
+                if not transcript.name.endswith(_MESSAGE_SUFFIX):
+                    continue
+                stem = transcript.name[: -len(_MESSAGE_SUFFIX)]
+                if stem == folder.name or not _CHILD_TRANSCRIPT_RE.fullmatch(stem):
+                    continue
+                sessions.append(
+                    Session(
+                        folder,
+                        transcript=transcript,
+                        db_parents=db_parents,
+                        session_id=f"{folder.name}__{stem}",
+                    )
+                )
     sessions.sort(
         key=lambda s: s.created.timestamp() if s.created else 0,
         reverse=True,

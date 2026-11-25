@@ -1,6 +1,6 @@
 # cline-exporter
 
-Export **Cline CLI 3.x** sessions to **Markdown** and **JSONL**.
+Export **Cline CLI 3.x** sessions to **Markdown**, **JSONL**, **memory**, and **corpus** products.
 
 It reads the local files Cline stores under `~/.cline/data/sessions/` and
 converts them to Markdown. It does not support the legacy `ui_messages.json`
@@ -31,11 +31,35 @@ python cline_exporter.py export --mode full --jsonl
 # Truncate tool results only, keep reasoning untouched
 python cline_exporter.py export --mode full --truncate 4000 --truncate-thinking 0
 
-# JSONL dump of all sessions
+# JSONL dump of all sessions (legacy product)
 python cline_exporter.py jsonl
+
+# One JSONL record per root session, with nested subagents
+python cline_exporter.py memory
+
+# One flat corpus document per root session
+python cline_exporter.py corpus
 ```
 
-Each `export` run creates its own folder so manifests never overwrite each other.
+Each run creates its own top-level folder so manifests never overwrite each other.
+Markdown files are grouped into `<YYYY-MM-DD>_<project>_<hash12>` project folders;
+the date is the newest included session in the project and the suffix is the first
+12 hex digits of SHA-256 over the canonical cwd/workspace-root key. Windows drive
+paths and their `/mnt/<drive>` WSL forms hash to the same ID. The three JSONL-like
+products write a single file at the root of their run folder.
+
+## Products
+
+| Command | Run folder | Output file(s) | Contents |
+|---------|------------|----------------|----------|
+| `export` | `<UTC>_<mode>` | `<YYYY-MM-DD>_<project>_<hash12>/<date>_<slug>_<mode>.md` | One Markdown file per session, grouped by project |
+| `jsonl` | `<UTC>_jsonl` | `all_sessions.jsonl` | One wrapped record per selected session (legacy) |
+| `jsonl --raw` | `<UTC>_jsonl` | `all_sessions_raw.jsonl` | One unwrapped `<id>.messages.json` document per file |
+| `memory` | `<UTC>_memory` | `memory.jsonl` | One record per root session with nested `subagents`, raw messages preserved |
+| `corpus` | `<UTC>_corpus` | `corpus.jsonl` | One flattened document per root session, including child text |
+
+All products share `--sessions-root`, `--data-dir`, `--limit`, `--sessions`,
+`--since`, `--filter`, `--dry-run`, `--out`, and `--json` handling.
 
 ## Disclaimer
 
@@ -103,9 +127,13 @@ compatibility aliases. The revision combines the modification time and size of
 the source messages and session metadata files; use `updated_at` for display and
 ordering. It supports lightweight change checks by launchers and is not a
 content hash. Export `manifest.json` records the same per-session timestamps and
-revision. Run folders use UTC `YYYYMMDDTHHMMSSZ` stamps. Session folders use
-`YYYY-MM-DD_<title>_<short-id>`, with the UTC last-modified date; Markdown files
-also begin with that date.
+revision. Run folders use UTC `YYYYMMDDTHHMMSSZ` stamps (`<stamp>_<mode>` for
+`export`, `<stamp>_<product>` for `jsonl`/`memory`/`corpus`). Markdown files are
+written directly into `<run>/<YYYY-MM-DD>_<project>_<hash12>/` (no per-session
+folder) as `<YYYY-MM-DD>_<title>_<mode>.md`, using the UTC last-modified date of
+the source session and falling back to its creation/metadata date. The project
+folder date is the newest included session in that project. A deterministic `@N`
+suffix is appended before `.md` if the same name would collide within a project.
 
 ### Exit Codes
 
@@ -147,6 +175,12 @@ python cline_exporter.py export --data-dir ./my_project_history
 # JSONL with metadata / raw (each writes its own run folder)
 python cline_exporter.py jsonl
 python cline_exporter.py jsonl --raw
+
+# Nested subagent memory and flattened corpus (each writes its own run folder)
+python cline_exporter.py memory
+python cline_exporter.py corpus
+python cline_exporter.py corpus --parts text,thinking
+python cline_exporter.py corpus --parts all
 ```
 
 ## Truncation (`full` and `tool-results`)
@@ -214,7 +248,7 @@ The last command produces the same dialogue-only Markdown content as
 `--mode conversation`; add `--jsonl` only when you also want the complete raw
 session archive in that bundle.
 
-## JSONL
+## JSONL (legacy)
 
 ```bash
 python cline_exporter.py jsonl [options]
@@ -239,7 +273,7 @@ Each line contains one session with metadata, usage, models, and the full raw
 messages:
 
 ```json
-{"id":"...","name":"...","created":"...","message_count":355,"provider":"cline","model":"cline-free/nemotron-3.5-super-vl","cwd":"...","source":"cli","source_root":"...","source_format":"cline-cli-3.x","status":"failed","ended_at":"...","exit_code":1,"usage":{"input_tokens":15107058,"output_tokens":28055,"cache_read_tokens":13771136,"cache_write_tokens":0,"total_cost":0.0},"aggregate_usage":null,"total_cost":0.0,"aggregated_agents_cost":0.0,"models":[...],"messages":[...]}
+{"id":"...","name":"...","created":"...","message_count":355,"provider":"cline","model":"cline-free/nemotron-3.5-super-vl","cwd":"...","project":"my-project","source":"cli","source_root":"...","source_format":"cline-cli-3.x","status":"failed","ended_at":"...","exit_code":1,"usage":{"input_tokens":15107058,"output_tokens":28055,"cache_read_tokens":13771136,"cache_write_tokens":0,"total_cost":0.0},"aggregate_usage":null,"total_cost":0.0,"aggregated_agents_cost":0.0,"models":[...],"messages":[...]}
 ```
 
 JSONL always contains the full raw messages, regardless of mode or filters.
@@ -252,6 +286,60 @@ Use `--raw` for one line per `<id>.messages.json` file (unwrapped), written to
 messages are written, so session-level usage/cost is not included (it lives in
 the sibling `<id>.json`).
 
+Every wrapped envelope includes `project`, derived from the last component of
+`cwd` (Windows `\` and POSIX `/` both work), then `workspace_root`, then
+`no-project`. Markdown manifest entries record `file` as a path relative to the
+run folder that starts with that project folder, plus `absolute_file` for
+convenience.
+
+## Memory
+
+```bash
+python cline_exporter.py memory [options]
+```
+
+Writes `memory.jsonl` in a `<out>/<timestamp>_memory/` run folder. There is one
+line per root session; child transcripts named `<agent>.messages.json` or
+`<agent>__<task>.messages.json` directly inside a root folder are nested under
+that root with IDs `<root>__<agent>` or `<root>__<agent>__<task>`. Parent links
+come from top-level `origin.parentThreadId`, then metadata `parent_session_id`
+or `parent_agent_id`, then a row in `<data>/db/sessions.db`. The agent ID comes
+from top-level `origin.subagent`; the generic top-level `agent` value
+(`lead`/`subagent`/`teammate`) never replaces it. An explicit
+`is_subagent: false` always keeps a session at the top level. Records keep the
+complete metadata envelope and the raw `messages`/`content` unchanged:
+
+```json
+{"id":"root-id","project":"my-project","messages":[...],"subagents":[{"id":"child-id","parent_session_id":"root-id","is_subagent":true,"messages":[...],"subagents":[]}]}
+```
+
+A session whose parent is unresolved or was not selected remains a root within
+that run, so no selected session is lost or mis-parented. Cyclic parent metadata
+is broken during nesting and traversal, so malformed data cannot loop forever.
+
+## Corpus
+
+```bash
+python cline_exporter.py corpus [options]
+python cline_exporter.py corpus --parts text,thinking
+python cline_exporter.py corpus --parts all
+```
+
+Writes `corpus.jsonl` in a `<out>/<timestamp>_corpus/` run folder. There is one
+flattened document per root session. Each document has `text` (all selected
+parts joined as plain text), `content` (the ordered flat parts with
+`session_id`, `role`, `type`, and `text`), `parts` (the selected part types),
+`sessions` (the root plus its descendants), top-level `session_count` and
+`message_count`, and `metadata` (the root session's metadata envelope).
+
+`--parts` accepts a comma-separated list of `text`, `thinking`, `tool_use`,
+`tool_result`, `other`, or `all`. The default is `text`. Child sessions are
+flattened into their root's document when their text is available; `thinking`,
+`tool_use`, and `tool_result` parts are only included when selected. Part types
+outside those four named kinds are emitted as `other` and keep their original
+JSON serialization in `text`. Unknown part *names* on the CLI are rejected with
+exit code 2.
+
 ## Layout read from Cline CLI 3.x
 
 ```
@@ -259,12 +347,24 @@ the sibling `<id>.json`).
   <id>/
     <id>.json            # metadata: started_at, prompt, provider, model, cwd...
     <id>.messages.json   # { messages: [ { role, ts, content: [...] } ] }
+    <agent>.messages.json
+    <agent>__<task>.messages.json
+  ../db/sessions.db
 ```
 
 On Windows: `C:\Users\<YourUser>\.cline\data\sessions\`.
 
 Each message has `role` (`user`/`assistant`), `ts`, and `content` as a list of
-parts: `text`, `thinking`, `tool_use`, `tool_result`.
+parts: `text`, `thinking`, `tool_use`, `tool_result`; other part types are kept
+under `other` in corpus output. Only direct files named `<agent>.messages.json`
+or `<agent>__<task>.messages.json` in a root folder are discovered as children;
+their IDs are `<root>__<agent>` or `<root>__<agent>__<task>`. The parent comes
+from top-level transcript `origin.parentThreadId`; `origin.subagent` supplies
+the agent ID and top-level `agent` only records the generic role. Without
+top-level origin metadata, legacy metadata parent fields are used first, then a
+row in `<data>/db/sessions.db`. Nested directories are not traversed by
+discovery; raw `jsonl --raw` still emits one line for every `*.messages.json`
+file it finds.
 
 `<id>.json` also carries `status`, `ended_at`, `exit_code`, `workspace_root`,
 `team_name`, `enable_*`, and a `metadata` object with `usage`, `aggregateUsage`,
@@ -276,29 +376,50 @@ Assistant messages may include `modelInfo` (`id`, `provider`, `family`) and
 
 ## Output layout (one folder per run)
 
-Every `export` run creates its own folder, so manifests never overwrite each
-other:
+Every run creates its own top-level folder, so manifests never overwrite each
+other. Markdown sessions are grouped by canonical project; JSONL-like products
+write one file at the run root:
 
 ```
 exports/
   20261105T034500Z_conversation/              # <UTC run timestamp>_<mode>
     manifest.json                              # manifest for this run only
-    2026-11-17_my-task_01a087aa/                 # <UTC update date>_<slug>_<short-id>
-      2026-11-17_my-task_conversation.md         # <UTC update date>_<slug>_<mode>.md
+    2026-11-17_my-project_a289bbc5b59c/        # <newest date>_<project>_<hash12>
+      2026-11-17_my-task_conversation.md       # <UTC modified date>_<slug>_<mode>.md
+      2026-11-17_my-task_conversation@2.md     # deterministic collision suffix
   20261105T035120Z_full/                       # add --jsonl to include JSONL here
     manifest.json
-    all_sessions.jsonl                       # only with --jsonl
-    2026-11-17_my-task_01a087aa/
+    all_sessions.jsonl                         # only with --jsonl
+    2026-11-17_my-project_a289bbc5b59c/
       2026-11-17_my-task_full.md
   20261105T041000Z_jsonl/                      # standalone `jsonl` run
     manifest.json
     all_sessions.jsonl
+  20261105T042000Z_memory/                     # standalone `memory` run
+    manifest.json
+    memory.jsonl
+  20261105T043000Z_corpus/                     # standalone `corpus` run
+    manifest.json
+    corpus.jsonl
 ```
 
 - Sessions are ordered by `started_at` (newest first).
+- Collision suffixes are assigned from a case-insensitive title slug, so names
+  differing only by case never race on case-insensitive filesystems.
 - The mode appears in the run folder and the Markdown file name.
+- The project folder uses the newest included session date, the readable project
+  name, and a 12-hex SHA-256 suffix of the canonical cwd/workspace-root key;
+  `no-project_<hash12>` is used when neither path provides a usable component.
 - JSONL is opt-in for Markdown exports (`--jsonl`); the standalone `jsonl`
   command always creates a JSONL-only run bundle.
+- `manifest.json` always records `tool`, `version`, `exported_at`, `run_folder`,
+  `source`, `product`, `sessions_root`, `session_count`, and `project_count`.
+  Markdown manifests add `mode`, fidelity/include/truncation fields, `totals`,
+  and a `sessions` array whose entries have a project-folder-prefixed relative
+  `file` plus `absolute_file`, `project_id`, `project_date`, and `project_folder`.
+  Product manifests (`jsonl`/`memory`/`corpus`) add
+  `jsonl_file`, `output_file`, `raw`, `limit`, `record_count`,
+  `root_session_count`, `selected_session_count`, and `parts` (corpus only).
 
 ## Fidelity metadata
 
@@ -365,16 +486,19 @@ not split per model.
 
 If the session uses subagents, `usage` covers this session's messages while
 `metadata.aggregateUsage` may include subagent sessions stored in other
-folders. In that case the manifest and JSONL include `aggregate_usage` and
+folders. The per-session metadata envelope (Markdown manifest entries, JSONL
+records, and corpus `metadata`) includes `aggregate_usage` and
 `aggregated_agents_cost` separately.
 
-Each run's `manifest.json` records the run folder, source, JSONL file, mode,
-include flags, truncation settings, sessions root, and every session with its
-output path, source/source_root, the same fidelity fields, usage/cost/models,
-and the curated Cline metadata
+Markdown `manifest.json` files add the mode, include flags, truncation settings,
+and a `sessions` array. Each entry carries the project-prefixed relative `file`
+(plus `absolute_file`), source/source_root, the fidelity fields shown above,
+usage/cost/models, and curated Cline metadata
 (`status`, `ended_at`, `workspace_root`, `team_name`, `git_branch`,
-`checkpoint_latest`, `session_origin`, subagent fields). It also includes a
-`totals` object with session/message counts and summed tokens/cost.
+`checkpoint_latest`, `session_origin`, subagent fields). They also include a
+`totals` object with session/message counts and summed tokens/cost. JSONL
+product manifests do not include per-session fidelity fields; their records and
+documents carry the metadata envelope and raw content instead.
 
 
 
@@ -410,6 +534,9 @@ python cline_exporter.py export --sessions-root "~/Library/Application Support/C
 - Paths with `\` work thanks to `pathlib`.
 - `started_at` (ISO with `Z`) is parsed correctly on Python 3.10+.
 - Folder names are sanitized to avoid invalid characters (`<>:"/\|?*`).
+- Project names accept both `\` and `/` separators (for example,
+  `C:\work\my-project` and `/work/my-project` both produce `my-project`).
+- Relative manifest paths use `/` separators on every platform.
 
 ## Roadmap
 
