@@ -262,7 +262,7 @@ class MarkdownLayoutTests(unittest.TestCase):
         self.assertEqual(
             names,
             [
-                "2026-07-08_created-task_conversation.md",
+                "2020-02-03_created-task_conversation.md",
                 "2026-07-08_dated-task_conversation.md",
             ],
         )
@@ -900,6 +900,14 @@ class CommandLineTests(unittest.TestCase):
         records = read_jsonl(manifest["jsonl_file"])
         self.assertEqual(records[0]["id"], "cli-root")
         self.assertEqual(records[0]["subagents"][0]["id"], "cli-child")
+        self.assertTrue(out.exists())
+
+    def test_cli_run_label_controls_run_folder(self):
+        result, out = self.cli("memory", "--json", "--run-label", "broad")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads(result.stdout)
+        self.assertEqual(manifest["run_label"], "broad")
+        self.assertTrue(Path(manifest["run_folder"]).name.endswith("_broad"))
         self.assertTrue(out.exists())
 
     def test_cli_corpus_parts_and_invalid_value(self):

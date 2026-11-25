@@ -231,7 +231,7 @@ def export_session(
     truncate_from,
     suffix=1,
 ):
-    date_prefix = session.project_date
+    date_prefix = _date_prefix(session)
     name_slug = slugify(session.name)
     project_dir = run_root / session.project_folder
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -284,6 +284,7 @@ def export_all(
     truncate_from,
     write_jsonl_file=False,
     dry_run=False,
+    run_label=None,
     session_ids=None,
     since=None,
     filter_text=None,
@@ -305,6 +306,7 @@ def export_all(
             "product": "markdown",
             "project_count": len({s["project_folder"] for s in sessions_meta}),
             "mode": mode,
+            "run_label": run_label or mode,
             "include_thinking": include_thinking,
             "include_tool_use": include_tool_use,
             "include_tool_results": include_tool_results,
@@ -332,7 +334,8 @@ def export_all(
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
     run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_root = _unique_dir(base, f"{run_ts}_{mode}")
+    run_label = slugify(run_label or mode, 48) or mode
+    run_root = _unique_dir(base, f"{run_ts}_{run_label}")
     run_root.mkdir(parents=True, exist_ok=True)
 
     manifest = {
@@ -343,6 +346,7 @@ def export_all(
         "source": "cli",
         "product": "markdown",
         "mode": mode,
+        "run_label": run_label,
         "include_thinking": include_thinking,
         "include_tool_use": include_tool_use,
         "include_tool_results": include_tool_results,
@@ -640,6 +644,7 @@ def export_products(
     out_root,
     raw=False,
     dry_run=False,
+    run_label=None,
     session_ids=None,
     since=None,
     filter_text=None,
@@ -665,6 +670,7 @@ def export_products(
             "writes": False,
             "source": "cli",
             "product": product,
+            "run_label": run_label or product,
             "raw": raw if product == "jsonl" else False,
             "parts": selected_parts if product == "corpus" else None,
             "sessions_root": str(sessions_root),
@@ -681,7 +687,8 @@ def export_products(
     base = Path(out_root) if out_root else Path.cwd() / DEFAULT_OUTPUT_DIR
     base.mkdir(parents=True, exist_ok=True)
     run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_root = _unique_dir(base, f"{run_ts}_{product}")
+    run_label = slugify(run_label or product, 48) or product
+    run_root = _unique_dir(base, f"{run_ts}_{run_label}")
     run_root.mkdir(parents=True, exist_ok=True)
 
     output_file = run_root / _product_filename(product, raw)
@@ -727,6 +734,7 @@ def export_products(
         "run_folder": str(run_root),
         "source": "cli",
         "product": product,
+        "run_label": run_label,
         "raw": raw if product == "jsonl" else False,
         "parts": selected_parts if product == "corpus" else None,
         "sessions_root": str(sessions_root),
@@ -1047,6 +1055,11 @@ def build_parser():
         default="created-desc",
         help="Ordering for listing sessions",
     )
+    common.add_argument(
+        "--run-label",
+        default=None,
+        help="Label appended to the timestamped run folder (default: mode or product)",
+    )
 
     parser = argparse.ArgumentParser(
         description="Export Cline CLI sessions to Markdown, JSONL, memory, and corpus",
@@ -1291,6 +1304,7 @@ def main():
             args.truncate_from,
             write_jsonl_file=args.jsonl,
             dry_run=args.dry_run,
+            run_label=args.run_label,
             session_ids=args.sessions,
             since=args.since,
             filter_text=args.filter,
@@ -1319,6 +1333,7 @@ def main():
             args.out,
             raw=getattr(args, "raw", False),
             dry_run=args.dry_run,
+            run_label=args.run_label,
             session_ids=args.sessions,
             since=args.since,
             filter_text=args.filter,

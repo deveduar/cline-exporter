@@ -127,8 +127,7 @@ compatibility aliases. The revision combines the modification time and size of
 the source messages and session metadata files; use `updated_at` for display and
 ordering. It supports lightweight change checks by launchers and is not a
 content hash. Export `manifest.json` records the same per-session timestamps and
-revision. Run folders use UTC `YYYYMMDDTHHMMSSZ` stamps (`<stamp>_<mode>` for
-`export`, `<stamp>_<product>` for `jsonl`/`memory`/`corpus`). Markdown files are
+revision. Run folders use UTC `YYYYMMDDTHHMMSSZ` stamps (`<stamp>_<label>`; the label defaults to `<mode>` for `export` and `<product>` for `jsonl`/`memory`/`corpus`, and `--run-label` overrides it). Markdown files are
 written directly into `<run>/<YYYY-MM-DD>_<project>_<hash12>/` (no per-session
 folder) as `<YYYY-MM-DD>_<title>_<mode>.md`, using the UTC last-modified date of
 the source session and falling back to its creation/metadata date. The project
